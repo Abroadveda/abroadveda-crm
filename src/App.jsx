@@ -256,7 +256,20 @@ export default function App() {
   const doUpdateApp = async (sid,aid,f) => { try { const a=await upsertApplication({id:aid,student_id:sid,...f}); setStudents(p=>p.map(s=>s.id===sid?{...s,applications:(s.applications||[]).map(x=>x.id===aid?a:x)}:s)); } catch { notify("Could not update"); } };
   const doDeleteApp = async (sid,aid)   => { try { await deleteApplication(aid); setStudents(p=>p.map(s=>s.id===sid?{...s,applications:(s.applications||[]).filter(x=>x.id!==aid)}:s)); } catch { notify("Could not delete"); } };
   const doCycleDoc  = async (sid,did,cur,name) => { const next=DOC_STATUSES[(DOC_STATUSES.indexOf(cur)+1)%DOC_STATUSES.length]; try { const d=await upsertDocument({id:did,student_id:sid,name,status:next}); setStudents(p=>p.map(s=>s.id===sid?{...s,documents:(s.documents||[]).map(x=>x.id===did?d:x)}:s)); } catch { notify("Could not update doc"); } };
-  const doAddDoc    = async (sid,name)  => { try { const d=await upsertDocument({student_id:sid,name,status:"Pending"}); setStudents(p=>p.map(s=>s.id===sid?{...s,documents:[...(s.documents||[]),d]}:s)); } catch { notify("Could not add doc"); } };
+  const doAddDoc = async (sid, name) => {
+    if (!name || !name.trim()) return;
+    try {
+      const d = await upsertDocument({ student_id: sid, name: name.trim(), status: "Pending" });
+      setStudents(p => p.map(s => {
+        if (s.id !== sid) return s;
+        const existing = s.documents || [];
+        // remove any tmp placeholder with same name
+        const filtered = existing.filter(x => !(x.id && x.id.startsWith('tmp-') && x.name === name.trim()));
+        return { ...s, documents: [...filtered, d] };
+      }));
+      notify("Document added");
+    } catch(e) { notify("Could not add doc: " + e.message); }
+  };
   const doDeleteDoc = async (sid,did)   => { try { await deleteDocument(did); setStudents(p=>p.map(s=>s.id===sid?{...s,documents:(s.documents||[]).filter(x=>x.id!==did)}:s)); } catch { notify("Could not delete doc"); } };
 
   const doAddTeam    = async (m)     => { try { const r=await createTeamMember(m); setTeam(p=>[...p,r]); setShowAddTeam(false); notify("Member added"); } catch { notify("Could not add member"); } };
@@ -1492,9 +1505,24 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
               </div>
             ))}
           </div>
-          <div className="flex gap-2 p-3 rounded-xl border-2 border-dashed" style={{borderColor:T.line}}>
-            <input value={newDoc} onChange={e=>setNewDoc(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&newDoc.trim()){onAddDoc(s.id,newDoc.trim());setNewDoc("");}}} placeholder="Type document name…" className="flex-1 py-1.5 px-2 rounded-lg border text-sm bg-white" style={{borderColor:"#CBD5E1"}}/>
-            <button onClick={()=>{if(newDoc.trim()){onAddDoc(s.id,newDoc.trim());setNewDoc("");}}} className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-white text-sm font-semibold" style={{background:T.blue}}><Plus size={14}/> Add</button>
+          <div className="flex gap-2 p-3 rounded-xl border-2 border-dashed" style={{borderColor:T.blue+"55"}}>
+            <input
+              value={newDoc}
+              onChange={e=>setNewDoc(e.target.value)}
+              onKeyDown={e=>{if(e.key==="Enter"&&newDoc.trim()){onAddDoc(s.id,newDoc.trim());setNewDoc("");}}}
+              placeholder="Type document name and click Add…"
+              className="flex-1 py-2 px-3 rounded-lg border text-sm bg-white"
+              style={{borderColor:"#CBD5E1"}}
+            />
+            <button
+              type="button"
+              onClick={()=>{
+                const val=newDoc.trim();
+                if(val){onAddDoc(s.id,val);setNewDoc("");}
+              }}
+              className="flex items-center gap-1.5 px-5 py-2 rounded-lg text-white text-sm font-bold shrink-0"
+              style={{background:T.blue}}
+            ><Plus size={14}/> Add</button>
           </div>
         </div>
       )}

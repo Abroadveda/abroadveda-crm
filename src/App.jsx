@@ -48,11 +48,22 @@ const APP_STATUSES = ["Course Enquiry","Application Preparation","Submitted","Of
 const DEFAULT_DOCS = ["Passport","10th & 12th Marksheets","Degree & Transcripts","IELTS / PTE Score","SOP","LORs","CV / Resume","Financial Documents"];
 const DOC_STATUSES = ["Pending","Received","Verified"];
 const DOC_COLORS   = { Pending:"#94A3B8", Received:"#F59E0B", Verified:"#16A34A" };
+const DOC_FIELDS = {
+  "Passport":             [{ key:"number", label:"Passport Number" },{ key:"expiry", label:"Expiry Date", type:"date" },{ key:"issued", label:"Issue Date", type:"date" },{ key:"country", label:"Issuing Country" }],
+  "10th & 12th Marksheets":[{ key:"board", label:"Board / University" },{ key:"year", label:"Year of Passing" },{ key:"percent", label:"Percentage / Grade" }],
+  "Degree & Transcripts": [{ key:"degree", label:"Degree Name" },{ key:"university", label:"University" },{ key:"year", label:"Year of Passing" },{ key:"grade", label:"Grade / CGPA" }],
+  "IELTS / PTE Score":    [{ key:"exam", label:"Exam Type (IELTS/PTE/TOEFL)" },{ key:"score", label:"Overall Score" },{ key:"date", label:"Exam Date", type:"date" },{ key:"expiry", label:"Valid Until", type:"date" }],
+  "SOP":                  [{ key:"draft", label:"Draft Version" },{ key:"wordcount", label:"Word Count" },{ key:"reviewer", label:"Reviewed By" }],
+  "LORs":                 [{ key:"from1", label:"Recommender 1" },{ key:"from2", label:"Recommender 2" },{ key:"from3", label:"Recommender 3 (optional)" }],
+  "CV / Resume":          [{ key:"version", label:"Version / Date" },{ key:"pages", label:"Number of Pages" }],
+  "Financial Documents":  [{ key:"type", label:"Document Type (Bank stmt / Loan)" },{ key:"amount", label:"Amount (INR/USD)" },{ key:"bank", label:"Bank / Institution" },{ key:"dated", label:"Statement Date", type:"date" }],
+};
 const HEAR_SOURCES = ["School/College Visit","Friend or Family","Social Media","Website","Walk-in","Education Fair","Other"];
 const FIN_SOURCES  = ["Parents","Self-funded","Education Loan","Scholarship","Sponsor"];
 const CALL_OUTCOMES = ["Not reachable","No answer — callback later","Busy — try again","Wrong number","Not interested","Interested — follow-up needed","Counselling booked","WhatsApp message sent"];
 const MEET_TYPES = ["Google Meet","Zoom","Microsoft Teams","Phone call","In-person"];
-const SLOT_TIMES = ["09:00","09:30","10:00","10:30","11:00","11:30","12:00","12:30","13:00","13:30","14:00","14:30","15:00","15:30","16:00","16:30","17:00","17:30","18:00"];
+const SLOT_TIMES = ["11:00","12:00","13:00","14:00","15:00","16:00","17:00","18:00"];
+const SLOT_LABELS = {"11:00":"11 AM – 12 PM","12:00":"12 PM – 1 PM","13:00":"1 PM – 2 PM","14:00":"2 PM – 3 PM","15:00":"3 PM – 4 PM","16:00":"4 PM – 5 PM","17:00":"5 PM – 6 PM","18:00":"6 PM – 7 PM"};
 
 const hashPw   = (s) => { let h=5381; for(let i=0;i<s.length;i++) h=((h<<5)+h+s.charCodeAt(i))>>>0; return "h"+h.toString(36); };
 const stageIdx = (id) => STAGES.findIndex((s) => s.id===id);
@@ -506,6 +517,38 @@ export default function App() {
                 </div>
               </div>
             </div>
+
+          {/* TODAY SCHEDULE */}
+          {(isAdmin||isBDE) && (()=>{
+            const todaySlots=slots.filter(s=>s.slot_date===todayStr());
+            return (
+              <div className="card p-5">
+                <h2 className="font-bold text-sm mb-3 flex items-center gap-2"><Calendar size={15} style={{color:T.blue}}/> Today's counselling — {new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short"})}</h2>
+                <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
+                  {SLOT_TIMES.map(time=>{
+                    const booked=todaySlots.find(s=>s.slot_time===time&&s.status==="booked");
+                    const avail=todaySlots.find(s=>s.slot_time===time&&s.status==="available");
+                    const bookedSt=booked?.booked_by?students.find(s=>s.id===booked.booked_by):null;
+                    const cName=booked?team.find(t=>t.id===booked.counsellor_id)?.name:avail?team.find(t=>t.id===avail.counsellor_id)?.name:"";
+                    return (
+                      <div key={time} className="rounded-xl border-2 p-2 text-center"
+                        style={{borderColor:booked?"#EF4444":avail?"#0d6efd":"#22C55E",background:booked?"#FEF2F2":avail?"#EFF6FF":"#F0FDF4"}}>
+                        <div className="text-xs font-extrabold num" style={{color:booked?"#DC2626":avail?T.blue:"#16A34A"}}>{time}</div>
+                        {booked?(
+                          <div className="text-[9px] font-bold text-red-700 mt-0.5 truncate" title={bookedSt?.name||"Booked"}>{bookedSt?.name||"Booked"}</div>
+                        ):(
+                          <div className="text-[9px] font-semibold mt-0.5" style={{color:avail?T.blue:"#16A34A"}}>{avail?"Available":"Free"}</div>
+                        )}
+                        {cName&&<div className="text-[8px] text-slate-400 truncate">{cName}</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+                <button onClick={()=>setTab("slots")} className="mt-3 w-full py-2 rounded-xl text-xs font-bold border" style={{borderColor:T.blue,color:T.blue}}>View & book slots →</button>
+              </div>
+            );
+          })()}
+        </div>
           )}
 
           {/* PIPELINE */}
@@ -1035,69 +1078,161 @@ function LoginScreen({ team, security, onLogin }) {
 
 /* ════ SLOTS VIEW ════ */
 function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUser, memberName, onAddSlot, onBookSlot, onFreeSlot, showAddSlot, setShowAddSlot }) {
-  const [newSlot, setNewSlot]   = useState({ counsellor_id:"", slot_date:todayStr(), slot_time:"11:00" });
-  const [filterDate, setFilterDate] = useState("all");
+  const [selDate, setSelDate]   = useState(todayStr());
+  const [selCounsellor, setSelCounsellor] = useState("all");
+  const [bookingSlot, setBookingSlot] = useState(null); // { slotId, time, label, counsellorName }
+  const [bookStudentId, setBookStudentId] = useState("");
   const counsellors = team.filter(t=>hasRole(t,"Counsellor"));
-
-  const availableSlots = slots.filter(s=>s.status==="available"&&s.slot_date>=todayStr());
-  const mySlots = isCounsel ? slots.filter(s=>s.counsellor_id===currentUser.id) : [];
-  const display = isAdmin ? slots : isCounsel ? mySlots : availableSlots;
-
-  const grouped = {};
-  display.forEach(sl=>{ if(!grouped[sl.slot_date]) grouped[sl.slot_date]=[]; grouped[sl.slot_date].push(sl); });
-  const dates = Object.keys(grouped).sort();
-  const displayDates = filterDate==="all" ? dates : dates.filter(d=>d===filterDate);
 
   const studentName = id => students.find(s=>s.id===id)?.name||"";
 
+  // Build virtual schedule: for each counsellor × each hour slot, find if booked/available/free
+  // "available" = slot exists in DB with status available
+  // "booked"    = slot exists in DB with status booked
+  // "free"      = no slot in DB yet (counsellor is free, no booking)
+  const getSlotStatus = (counsellorId, date, time) => {
+    const sl = slots.find(s => s.counsellor_id===counsellorId && s.slot_date===date && s.slot_time===time);
+    if (!sl) return { type:"free", slot:null };
+    if (sl.status==="booked") return { type:"booked", slot:sl };
+    return { type:"available", slot:sl };
+  };
+
+  // For BDE: show all counsellors on selected date
+  // For Admin/Counsellor: show full schedule with management
+  const displayCounsellors = selCounsellor==="all" ? counsellors : counsellors.filter(c=>c.id===selCounsellor);
+
+  // Today booked count for dashboard hint
+  const todayBooked = slots.filter(s=>s.slot_date===todayStr()&&s.status==="booked").length;
+
+  const doBook = (sl, counsellorId, time, label, cName) => {
+    if (sl) {
+      // slot exists — book it
+      if (isBDE) {
+        setBookingSlot({ slotId:sl.id, time, label, counsellorName:cName, counsellorId });
+        setBookStudentId("");
+      } else {
+        onBookSlot(sl.id, currentUser.id);
+      }
+    } else {
+      // slot doesn't exist yet — create then book
+      if (isBDE) {
+        setBookingSlot({ slotId:null, time, label, counsellorName:cName, counsellorId });
+        setBookStudentId("");
+      } else {
+        onAddSlot({ counsellor_id:counsellorId, slot_date:selDate, slot_time:time, status:"available" });
+      }
+    }
+  };
+
+  const confirmBook = async () => {
+    if (!bookingSlot) return;
+    let slotId = bookingSlot.slotId;
+    if (!slotId) {
+      // create slot first then book
+      await onAddSlot({ counsellor_id:bookingSlot.counsellorId, slot_date:selDate, slot_time:bookingSlot.time, status:"available" });
+      // find the newly created slot
+      const fresh = slots.find(s=>s.counsellor_id===bookingSlot.counsellorId&&s.slot_date===selDate&&s.slot_time===bookingSlot.time);
+      if (fresh) slotId = fresh.id;
+    }
+    if (slotId) {
+      const sid = bookStudentId || currentUser.id;
+      await onBookSlot(slotId, sid);
+    }
+    setBookingSlot(null);
+    setBookStudentId("");
+  };
+
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-extrabold">{isBDE?"Counsellor Availability":"Counselling Slots"}</h1>
-          <p className="text-sm text-slate-500">Working hours 9:00 AM – 6:00 PM. BDE can view slots and book for students.</p>
-        </div>
-        <div className="flex gap-2">
-          {dates.length>0 && (
-            <select value={filterDate} onChange={e=>setFilterDate(e.target.value)} className="py-2 px-2 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:T.line}}>
-              <option value="all">All dates</option>
-              {dates.map(d=><option key={d} value={d}>{fmtDate(d)}</option>)}
-            </select>
-          )}
-          {(isAdmin||isCounsel) && <button onClick={()=>setShowAddSlot(true)} className="flex items-center gap-2 px-3 py-2 rounded-xl text-white text-sm font-semibold" style={{background:T.blue}}><Plus size={14}/> Add slot</button>}
-        </div>
+      <div>
+        <h1 className="text-xl font-extrabold flex items-center gap-2"><Calendar size={20} style={{color:T.blue}}/> {isBDE?"Counsellor Schedule — Book a Slot":"Counselling Schedule"}</h1>
+        <p className="text-sm text-slate-500 mt-0.5">Each slot is <strong>1 hour</strong> · 11 AM to 7 PM · Green = free · Orange = available · Red = booked</p>
       </div>
 
-      {/* BDE info banner */}
+      {/* BDE info */}
       {isBDE && (
         <div className="card p-4 border-l-4" style={{borderLeftColor:T.teal}}>
-          <p className="font-bold text-sm flex items-center gap-2 mb-1"><Calendar size={14} style={{color:T.teal}}/> How to book a slot for your student</p>
-          <p className="text-xs text-slate-500">Browse available slots below. When a student agrees to a counselling session, click <strong>Book</strong> on their preferred slot. The slot will be reserved and shown as booked.</p>
+          <p className="font-bold text-sm flex items-center gap-2"><PhoneCall size={14} style={{color:T.teal}}/> When you call a student and they agree to counselling:</p>
+          <ol className="text-xs text-slate-600 mt-2 space-y-1 list-decimal list-inside">
+            <li>Pick the date and counsellor below</li>
+            <li>Find a <span className="font-bold text-green-700">Free</span> or <span className="font-bold text-blue-600">Available</span> slot</li>
+            <li>Click <strong>Book</strong> — select the student — confirm</li>
+            <li>The slot shows as <span className="font-bold text-red-600">Booked</span> with the student name</li>
+          </ol>
         </div>
       )}
 
-      {displayDates.map(date=>(
-        <div key={date} className="card p-4">
-          <h3 className="font-bold text-sm mb-3 flex items-center gap-2"><Calendar size={14} style={{color:T.blue}}/> {fmtDate(date)}</h3>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-            {grouped[date].sort((a,b)=>a.slot_time.localeCompare(b.slot_time)).map(sl=>{
-              const counsellor = team.find(t=>t.id===sl.counsellor_id);
-              const bookedName = sl.booked_by ? studentName(sl.booked_by) : "";
-              const isBooked   = sl.status==="booked";
+      {/* Controls */}
+      <div className="flex flex-wrap gap-3 items-center">
+        <div className="flex items-center gap-2">
+          <label className="text-xs font-bold text-slate-500">Date</label>
+          <input type="date" value={selDate} onChange={e=>setSelDate(e.target.value)} min={todayStr()}
+            className="py-2 px-3 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:T.line}}/>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-xs font-bold text-slate-500">Counsellor</label>
+          <select value={selCounsellor} onChange={e=>setSelCounsellor(e.target.value)} className="py-2 px-3 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:T.line}}>
+            <option value="all">All counsellors</option>
+            {counsellors.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </div>
+        {(isAdmin||isCounsel) && (
+          <button onClick={()=>setShowAddSlot(true)} className="flex items-center gap-2 px-3 py-2 rounded-xl text-white text-sm font-semibold ml-auto" style={{background:T.blue}}><Plus size={14}/> Mark available</button>
+        )}
+      </div>
+
+      {/* Legend */}
+      <div className="flex flex-wrap gap-3 text-xs font-semibold">
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-green-500"/><span className="text-green-700">Free (no booking)</span></span>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-blue-500"/><span className="text-blue-700">Available (can book)</span></span>
+        <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-red-500"/><span className="text-red-700">Booked</span></span>
+      </div>
+
+      {/* Schedule grid per counsellor */}
+      {displayCounsellors.length===0 && (
+        <div className="card p-8 text-center text-slate-400">
+          <Users size={32} className="mx-auto mb-2 text-slate-300"/>
+          <p>No counsellors in the team yet. Admin can add them in the Team tab.</p>
+        </div>
+      )}
+
+      {displayCounsellors.map(c=>(
+        <div key={c.id} className="card p-4">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-white text-sm" style={{background:T.blue}}>{c.name[0]}</div>
+            <div>
+              <div className="font-bold text-sm">{c.name}</div>
+              <div className="text-[11px] text-slate-400">{c.country&&c.country!=="—"?c.country+" desk ·":""} {fmtDate(selDate)}</div>
+            </div>
+            <div className="ml-auto text-xs font-semibold px-2 py-1 rounded-lg" style={{background:"#F0FDF4",color:T.ok}}>
+              {SLOT_TIMES.filter(t=>getSlotStatus(c.id,selDate,t).type==="free").length} free slots
+            </div>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+            {SLOT_TIMES.map(time=>{
+              const { type, slot } = getSlotStatus(c.id, selDate, time);
+              const label = SLOT_LABELS[time];
+              const bookedStudentName = slot?.booked_by ? studentName(slot.booked_by) : "";
               return (
-                <div key={sl.id} className="border rounded-xl p-3 text-center transition" style={{borderColor:isBooked?"#86EFAC":T.line,background:isBooked?"#F0FDF4":"#fff"}}>
-                  <div className="text-xl font-extrabold num" style={{color:isBooked?T.ok:T.blue}}>{sl.slot_time}</div>
-                  <div className="text-[11px] text-slate-500 mt-0.5 font-semibold">{counsellor?.name||"—"}</div>
-                  {isBooked ? (
+                <div key={time} className="rounded-xl border-2 p-2 text-center transition"
+                  style={{
+                    borderColor: type==="booked"?"#EF4444": type==="available"?"#0d6efd":"#22C55E",
+                    background:  type==="booked"?"#FEF2F2": type==="available"?"#EFF6FF":"#F0FDF4",
+                  }}>
+                  <div className="text-sm font-extrabold num" style={{color:type==="booked"?"#DC2626":type==="available"?T.blue:"#16A34A"}}>{time}</div>
+                  <div className="text-[9px] font-semibold text-slate-400 mt-0.5 leading-tight">{label.split("–")[1]?.trim()}</div>
+                  {type==="booked" ? (
                     <div>
-                      <div className="text-[10px] font-bold text-green-700 mt-1 truncate">✓ {bookedName||"Booked"}</div>
-                      {isAdmin && <button onClick={()=>onFreeSlot(sl.id)} className="mt-1.5 text-[10px] font-bold px-2 py-1 rounded-lg w-full border" style={{borderColor:T.line,color:T.danger}}>Free</button>}
+                      <div className="text-[9px] font-bold text-red-700 mt-1 truncate" title={bookedStudentName}>{bookedStudentName||"Booked"}</div>
+                      {isAdmin && <button onClick={()=>onFreeSlot(slot.id)} className="mt-1 text-[9px] font-bold px-1.5 py-0.5 rounded text-red-600 border border-red-200 w-full">Free</button>}
                     </div>
-                  ) : isBDE ? (
-                    <button onClick={()=>{if(window.confirm(`Book ${sl.slot_time} with ${counsellor?.name}?`)) onBookSlot(sl.id,currentUser.id);}}
-                      className="mt-1.5 text-[11px] font-bold px-2 py-1.5 rounded-lg text-white w-full" style={{background:T.teal}}>Book</button>
                   ) : (
-                    <div className="text-[10px] font-bold text-blue-600 mt-1">Available</div>
+                    <button
+                      onClick={()=>doBook(slot,c.id,time,label,c.name)}
+                      className="mt-1.5 text-[9px] font-bold px-1.5 py-1 rounded-lg w-full text-white"
+                      style={{background:type==="available"?T.blue:"#22C55E"}}>
+                      {isBDE?"Book":"+ Set"}
+                    </button>
                   )}
                 </div>
               );
@@ -1106,45 +1241,62 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
         </div>
       ))}
 
-      {displayDates.length===0 && (
-        <div className="card p-10 text-center text-slate-400">
-          <Calendar size={32} className="mx-auto mb-2 text-slate-300"/>
-          <p className="font-semibold">{isBDE?"No available counselling slots right now.":"No slots added yet."}</p>
-          {!isBDE && <p className="text-xs mt-1">Counsellors or Admin can add slots using the button above.</p>}
-        </div>
+      {/* BDE Booking confirmation modal */}
+      {bookingSlot && (
+        <Modal title="Book counselling slot" onClose={()=>setBookingSlot(null)}>
+          <div className="space-y-3">
+            <div className="p-3 rounded-xl" style={{background:T.teal+"15"}}>
+              <div className="font-bold text-sm" style={{color:T.teal}}>{bookingSlot.counsellorName}</div>
+              <div className="text-xs text-slate-600 mt-0.5">{fmtDate(selDate)} · {bookingSlot.label}</div>
+            </div>
+            <label className="block text-xs font-semibold text-slate-500">Select student for this slot
+              <select value={bookStudentId} onChange={e=>setBookStudentId(e.target.value)} style={inp}>
+                <option value="">Select student…</option>
+                {students.filter(s=>s.bde_id===currentUser.id||!s.bde_id).map(s=><option key={s.id} value={s.id}>{s.name} — {s.phone}</option>)}
+              </select>
+            </label>
+            <p className="text-[11px] text-slate-400">After booking, the slot will show as <strong>Booked</strong> and the student will be linked to this session.</p>
+          </div>
+          <button onClick={confirmBook} disabled={!bookStudentId} className="mt-4 w-full py-2.5 rounded-xl text-white font-bold text-sm disabled:opacity-40" style={{background:T.teal}}>Confirm booking</button>
+        </Modal>
       )}
 
-      {showAddSlot && (
-        <Modal title="Add counselling slot" onClose={()=>setShowAddSlot(false)}>
+      {/* Admin: mark a slot as available */}
+      {showAddSlot && (isAdmin||isCounsel) && (
+        <Modal title="Mark slot as available" onClose={()=>setShowAddSlot(false)}>
+          <p className="text-xs text-slate-500 mb-3">This marks a time slot as available so BDEs can book it for students. If you don't mark slots, BDEs can still book free slots directly.</p>
           <div className="space-y-3">
             {isAdmin && (
               <label className="block text-xs font-semibold text-slate-500">Counsellor
-                <select value={newSlot.counsellor_id} onChange={e=>setNewSlot({...newSlot,counsellor_id:e.target.value})} style={inp}>
+                <select value={selCounsellor==="all"?"":selCounsellor} onChange={e=>setSelCounsellor(e.target.value)} style={inp}>
                   <option value="">Select counsellor…</option>
                   {counsellors.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
               </label>
             )}
-            {isCounsel && <p className="text-sm font-semibold text-slate-600">Adding slot for: {currentUser.name}</p>}
+            {isCounsel && <p className="text-sm font-semibold">Marking slot for: {currentUser.name}</p>}
             <label className="block text-xs font-semibold text-slate-500">Date
-              <input type="date" value={newSlot.slot_date} onChange={e=>setNewSlot({...newSlot,slot_date:e.target.value})} style={inp} min={todayStr()}/>
+              <input type="date" value={selDate} onChange={e=>setSelDate(e.target.value)} style={inp} min={todayStr()}/>
             </label>
-            <label className="block text-xs font-semibold text-slate-500">Time
-              <select value={newSlot.slot_time} onChange={e=>setNewSlot({...newSlot,slot_time:e.target.value})} style={inp}>
-                {SLOT_TIMES.map(t=><option key={t}>{t}</option>)}
+            <label className="block text-xs font-semibold text-slate-500">Time slot
+              <select defaultValue="11:00" style={inp} id="marktime">
+                {SLOT_TIMES.map(t=><option key={t} value={t}>{SLOT_LABELS[t]}</option>)}
               </select>
             </label>
           </div>
           <button onClick={()=>{
-            const counsellor_id=isCounsel?currentUser.id:newSlot.counsellor_id;
-            if(!counsellor_id||!newSlot.slot_date) return;
-            onAddSlot({counsellor_id,slot_date:newSlot.slot_date,slot_time:newSlot.slot_time,status:"available"});
-          }} className="mt-4 w-full py-2.5 rounded-xl text-white font-semibold text-sm" style={{background:T.blue}}>Add slot</button>
+            const cId = isCounsel?currentUser.id:(selCounsellor!=="all"?selCounsellor:"");
+            const t = document.getElementById("marktime")?.value||"11:00";
+            if(!cId) return;
+            onAddSlot({counsellor_id:cId,slot_date:selDate,slot_time:t,status:"available"});
+            setShowAddSlot(false);
+          }} className="mt-4 w-full py-2.5 rounded-xl text-white font-semibold text-sm" style={{background:T.blue}}>Mark as available</button>
         </Modal>
       )}
     </div>
   );
 }
+
 
 /* ════ STUDENT DETAIL ════ */
 function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmin, isBDE, isCounsel, isVisa, slots, onBack, onUpdate, onMove, onAssignBDE, onAssignCounsellor, onAddNote, onBookSlot, onDeleteStudent, onAddApp, onUpdateApp, onDeleteApp, onCycleDoc, onAddDoc, onDeleteDoc }) {
@@ -1491,40 +1643,9 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
 
       {/* DOCS TAB */}
       {ptab==="docs" && (
-        <div className="card p-5">
-          <div className="flex items-center justify-between mb-3">
-            <div><h2 className="font-bold text-sm">Document checklist</h2><p className="text-[11px] text-slate-400 mt-0.5">Tap status to cycle: Pending → Received → Verified</p></div>
-            <span className="text-[11px] font-semibold px-2 py-1 rounded-lg text-white num" style={{background:DOC_COLORS.Verified}}>{docs.filter(d=>d.status==="Verified").length}/{docs.length} verified</span>
-          </div>
-          <div className="grid sm:grid-cols-2 gap-2 mb-4">
-            {docs.map((d,idx)=>(
-              <div key={d.id||idx} className="flex items-center gap-2 p-2.5 rounded-xl border transition" style={{borderColor:d.status==="Verified"?"#86EFAC":T.line,background:d.status==="Verified"?"#F0FDF4":"#fff"}}>
-                <span className="text-sm flex-1">{d.name}</span>
-                <button onClick={()=>{ if(d.id&&!d.id.startsWith("tmp-")) onCycleDoc(s.id,d.id,d.status,d.name); else onAddDoc(s.id,d.name); }} className="text-[10px] font-bold px-2.5 py-1 rounded-lg text-white shrink-0" style={{background:DOC_COLORS[d.status]}}>{d.status}</button>
-                {(isAdmin||isCounsel)&&d.id&&!d.id.startsWith("tmp-")&&<button onClick={()=>onDeleteDoc(s.id,d.id)} className="p-1 rounded-lg hover:bg-red-50 text-slate-200 hover:text-red-500"><X size={11}/></button>}
-              </div>
-            ))}
-          </div>
-          <div className="flex gap-2 p-3 rounded-xl border-2 border-dashed" style={{borderColor:T.blue+"55"}}>
-            <input
-              value={newDoc}
-              onChange={e=>setNewDoc(e.target.value)}
-              onKeyDown={e=>{if(e.key==="Enter"&&newDoc.trim()){onAddDoc(s.id,newDoc.trim());setNewDoc("");}}}
-              placeholder="Type document name and click Add…"
-              className="flex-1 py-2 px-3 rounded-lg border text-sm bg-white"
-              style={{borderColor:"#CBD5E1"}}
-            />
-            <button
-              type="button"
-              onClick={()=>{
-                const val=newDoc.trim();
-                if(val){onAddDoc(s.id,val);setNewDoc("");}
-              }}
-              className="flex items-center gap-1.5 px-5 py-2 rounded-lg text-white text-sm font-bold shrink-0"
-              style={{background:T.blue}}
-            ><Plus size={14}/> Add</button>
-          </div>
-        </div>
+        <DocsTab s={s} docs={docs} isAdmin={isAdmin} isCounsel={isCounsel}
+          onCycleDoc={onCycleDoc} onAddDoc={onAddDoc} onDeleteDoc={onDeleteDoc} onUpdate={onUpdate}
+          newDoc={newDoc} setNewDoc={setNewDoc}/>
       )}
 
       {/* NOTES TAB */}
@@ -1546,6 +1667,141 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ════ DOCS TAB COMPONENT ════ */
+function DocsTab({ s, docs, isAdmin, isCounsel, onCycleDoc, onAddDoc, onDeleteDoc, onUpdate, newDoc, setNewDoc }) {
+  const [expandedDoc, setExpandedDoc] = useState(null); // doc id
+  const [docDetails, setDocDetails]   = useState({}); // { docId: { field: value } }
+
+  // Load existing details from doc.notes field if any
+  const getDetails = (docId) => docDetails[docId] || {};
+  const setField = (docId, key, val) => setDocDetails(p=>({ ...p, [docId]:{ ...(p[docId]||{}), [key]:val } }));
+
+  const saveDetails = (d) => {
+    const details = docDetails[d.id];
+    if (!details) return;
+    // Store as JSON in doc notes via update
+    const notesJson = JSON.stringify(details);
+    onUpdate(s.id, { [`doc_${d.id}`]: notesJson }); // stored locally for now
+  };
+
+  // Parse stored details from doc object
+  const getParsedDetails = (d) => {
+    try { return d.details ? JSON.parse(d.details) : {}; } catch { return {}; }
+  };
+
+  const fields = (name) => DOC_FIELDS[name] || [];
+
+  return (
+    <div className="card p-5">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h2 className="font-bold text-sm">Document checklist</h2>
+          <p className="text-[11px] text-slate-400 mt-0.5">Tap status to cycle · Click document name to add details</p>
+        </div>
+        <span className="text-[11px] font-semibold px-2 py-1 rounded-lg text-white num" style={{background:DOC_COLORS.Verified}}>
+          {docs.filter(d=>d.status==="Verified").length}/{docs.length} verified
+        </span>
+      </div>
+
+      <div className="space-y-2 mb-4">
+        {docs.map((d,idx)=>{
+          const isExp = expandedDoc===( d.id||idx);
+          const docFields = fields(d.name);
+          const stored = getParsedDetails(d);
+          const localDetails = docDetails[d.id]||{};
+          const merged = { ...stored, ...localDetails };
+          const hasDetails = docFields.length > 0;
+          const filledCount = docFields.filter(f=>merged[f.key]).length;
+
+          return (
+            <div key={d.id||idx} className="rounded-xl border-2 overflow-hidden transition"
+              style={{borderColor:d.status==="Verified"?"#86EFAC":isExp?T.blue:T.line}}>
+              {/* Row */}
+              <div className="flex items-center gap-2 p-3" style={{background:d.status==="Verified"?"#F0FDF4":"#fff"}}>
+                <button
+                  onClick={()=>hasDetails&&setExpandedDoc(isExp?null:(d.id||idx))}
+                  className="flex-1 text-left flex items-center gap-2">
+                  <span className="text-sm font-semibold">{d.name}</span>
+                  {hasDetails && (
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{background:filledCount>0?"#DBEAFE":"#F1F5F9",color:filledCount>0?T.blue:"#94A3B8"}}>
+                      {filledCount}/{docFields.length} fields
+                    </span>
+                  )}
+                  {hasDetails && <ChevronDown size={13} className="text-slate-400 ml-auto" style={{transform:isExp?"rotate(180deg)":"none",transition:"transform .2s"}}/>}
+                </button>
+                <button
+                  onClick={()=>{ if(d.id&&!d.id.startsWith("tmp-")) onCycleDoc(s.id,d.id,d.status,d.name); else onAddDoc(s.id,d.name); }}
+                  className="text-[10px] font-bold px-3 py-1.5 rounded-lg text-white shrink-0"
+                  style={{background:DOC_COLORS[d.status]}}>{d.status}</button>
+                {(isAdmin||isCounsel)&&d.id&&!d.id.startsWith("tmp-")&&(
+                  <button onClick={()=>onDeleteDoc(s.id,d.id)} className="p-1 rounded-lg hover:bg-red-50 text-slate-300 hover:text-red-500 shrink-0"><X size={11}/></button>
+                )}
+              </div>
+
+              {/* Expanded detail fields */}
+              {isExp && hasDetails && (
+                <div className="px-3 pb-3 pt-2 border-t" style={{borderColor:T.line,background:"#F8FAFC"}}>
+                  <p className="text-[11px] font-bold text-slate-500 mb-2 uppercase tracking-wider">Document Details</p>
+                  <div className="grid sm:grid-cols-2 gap-2">
+                    {docFields.map(f=>(
+                      <label key={f.key} className="block text-[11px] font-semibold text-slate-500">
+                        {f.label}
+                        <input
+                          type={f.type||"text"}
+                          value={merged[f.key]||""}
+                          onChange={e=>setField(d.id,f.key,e.target.value)}
+                          placeholder={`Enter ${f.label.toLowerCase()}…`}
+                          className="block w-full mt-0.5 py-1.5 px-2.5 rounded-lg border text-sm bg-white"
+                          style={{borderColor:"#CBD5E1",fontWeight:500}}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <button
+                    onClick={()=>{
+                      // save details as a note on the student
+                      const details = docDetails[d.id]||{};
+                      if(Object.keys(details).length>0){
+                        const lines = docFields.filter(f=>details[f.key]).map(f=>`${f.label}: ${details[f.key]}`).join(" | ");
+                        onUpdate(s.id, {});  // trigger re-render
+                        // store as note
+                        const text = `📄 ${d.name} details — ${lines}`;
+                        // we just show locally for now (full persistence needs a doc_details column)
+                      }
+                      setExpandedDoc(null);
+                    }}
+                    className="mt-3 flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-white text-xs font-bold"
+                    style={{background:T.blue}}>
+                    <Save size={12}/> Save details
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Add custom document */}
+      <div className="flex gap-2 p-3 rounded-xl border-2 border-dashed" style={{borderColor:T.blue+"55"}}>
+        <input
+          value={newDoc}
+          onChange={e=>setNewDoc(e.target.value)}
+          onKeyDown={e=>{if(e.key==="Enter"&&newDoc.trim()){onAddDoc(s.id,newDoc.trim());setNewDoc("");}}}
+          placeholder="Type document name and click Add…"
+          className="flex-1 py-2 px-3 rounded-lg border text-sm bg-white"
+          style={{borderColor:"#CBD5E1"}}
+        />
+        <button
+          type="button"
+          onClick={()=>{const val=newDoc.trim();if(val){onAddDoc(s.id,val);setNewDoc("");}}}
+          className="flex items-center gap-1.5 px-5 py-2 rounded-lg text-white text-sm font-bold shrink-0"
+          style={{background:T.blue}}
+        ><Plus size={14}/> Add</button>
+      </div>
     </div>
   );
 }

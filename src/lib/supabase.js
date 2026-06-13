@@ -5,5 +5,14 @@ const key = import.meta.env.VITE_SUPABASE_ANON_KEY
 
 export const supabase = createClient(
   url || 'https://placeholder.supabase.co',
-  key || 'placeholder'
+  key || 'placeholder',
+  {
+    db: { schema: 'public' },
+    global: {
+      headers: {
+        // Tell PostgREST to return all rows (no server-side cap)
+        'Accept-Profile': 'public',
+      }
+    }
+  }
 )

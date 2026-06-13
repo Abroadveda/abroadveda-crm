@@ -237,13 +237,18 @@ export default function App() {
   };
   const bulkDelete = async () => {
     if (selLeads.size===0) return;
-    if (!window.confirm(`Delete ${selLeads.size} lead(s)? Cannot be undone.`)) return;
+    if (!window.confirm(`Delete ${selLeads.size} lead(s)? This cannot be undone.`)) return;
+    const count = selLeads.size;
     try {
+      notify("Deleting…");
       await bulkDeleteStudents([...selLeads]);
       setStudents(p=>p.filter(s=>!selLeads.has(s.id)));
-      notify(`${selLeads.size} leads deleted`);
+      notify(`${count} leads deleted`);
       setSelLeads(new Set());
-    } catch { notify("Delete failed"); }
+    } catch(e) {
+      console.error("Bulk delete error:", e);
+      notify("Delete failed: " + (e.message||"Check Supabase RLS policies"));
+    }
   };
 
   const toggleLead = (id) => setSelLeads(prev=>{const n=new Set(prev); n.has(id)?n.delete(id):n.add(id); return n;});

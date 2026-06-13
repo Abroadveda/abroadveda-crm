@@ -518,36 +518,7 @@ export default function App() {
               </div>
             </div>
 
-          {/* TODAY SCHEDULE */}
-          {(isAdmin||isBDE) && (()=>{
-            const todaySlots=slots.filter(s=>s.slot_date===todayStr());
-            return (
-              <div className="card p-5">
-                <h2 className="font-bold text-sm mb-3 flex items-center gap-2"><Calendar size={15} style={{color:T.blue}}/> Today's counselling — {new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short"})}</h2>
-                <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
-                  {SLOT_TIMES.map(time=>{
-                    const booked=todaySlots.find(s=>s.slot_time===time&&s.status==="booked");
-                    const avail=todaySlots.find(s=>s.slot_time===time&&s.status==="available");
-                    const bookedSt=booked?.booked_by?students.find(s=>s.id===booked.booked_by):null;
-                    const cName=booked?team.find(t=>t.id===booked.counsellor_id)?.name:avail?team.find(t=>t.id===avail.counsellor_id)?.name:"";
-                    return (
-                      <div key={time} className="rounded-xl border-2 p-2 text-center"
-                        style={{borderColor:booked?"#EF4444":avail?"#0d6efd":"#22C55E",background:booked?"#FEF2F2":avail?"#EFF6FF":"#F0FDF4"}}>
-                        <div className="text-xs font-extrabold num" style={{color:booked?"#DC2626":avail?T.blue:"#16A34A"}}>{time}</div>
-                        {booked?(
-                          <div className="text-[9px] font-bold text-red-700 mt-0.5 truncate" title={bookedSt?.name||"Booked"}>{bookedSt?.name||"Booked"}</div>
-                        ):(
-                          <div className="text-[9px] font-semibold mt-0.5" style={{color:avail?T.blue:"#16A34A"}}>{avail?"Available":"Free"}</div>
-                        )}
-                        {cName&&<div className="text-[8px] text-slate-400 truncate">{cName}</div>}
-                      </div>
-                    );
-                  })}
-                </div>
-                <button onClick={()=>setTab("slots")} className="mt-3 w-full py-2 rounded-xl text-xs font-bold border" style={{borderColor:T.blue,color:T.blue}}>View & book slots →</button>
-              </div>
-            );
-          })()}
+          <TodaySchedule slots={slots} students={students} team={team} isAdmin={isAdmin} isBDE={isBDE} onTabChange={setTab}/>
         </div>
           )}
 
@@ -1077,6 +1048,50 @@ function LoginScreen({ team, security, onLogin }) {
 }
 
 /* ════ SLOTS VIEW ════ */
+/* ════ TODAY SCHEDULE WIDGET ════ */
+function TodaySchedule({ slots, students, team, isAdmin, isBDE, onTabChange }) {
+  if (!isAdmin && !isBDE) return null;
+  const today = new Date().toISOString().slice(0,10);
+  const todaySlots = slots.filter(s=>s.slot_date===today);
+  const studentName = id => students.find(s=>s.id===id)?.name||"";
+  const counsellorName = id => team.find(t=>t.id===id)?.name||"";
+  return (
+    <div className="card p-5">
+      <h2 className="font-bold text-sm mb-3 flex items-center gap-2">
+        <Calendar size={15} style={{color:"#0d6efd"}}/>
+        Today's counselling — {new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short"})}
+      </h2>
+      <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
+        {SLOT_TIMES.map(time=>{
+          const booked = todaySlots.find(s=>s.slot_time===time&&s.status==="booked");
+          const avail  = todaySlots.find(s=>s.slot_time===time&&s.status==="available");
+          const bookedName = booked?.booked_by ? studentName(booked.booked_by) : "";
+          const cName = booked ? counsellorName(booked.counsellor_id) : avail ? counsellorName(avail.counsellor_id) : "";
+          const type = booked?"booked":avail?"available":"free";
+          return (
+            <div key={time} className="rounded-xl border-2 p-2 text-center"
+              style={{
+                borderColor:type==="booked"?"#EF4444":type==="available"?"#0d6efd":"#22C55E",
+                background: type==="booked"?"#FEF2F2":type==="available"?"#EFF6FF":"#F0FDF4"
+              }}>
+              <div className="text-xs font-extrabold" style={{color:type==="booked"?"#DC2626":type==="available"?"#0d6efd":"#16A34A"}}>{time}</div>
+              {type==="booked" ? (
+                <div className="text-[9px] font-bold text-red-700 mt-0.5 truncate">{bookedName||"Booked"}</div>
+              ) : (
+                <div className="text-[9px] font-semibold mt-0.5" style={{color:type==="available"?"#0d6efd":"#16A34A"}}>{type==="available"?"Available":"Free"}</div>
+              )}
+              {cName && <div className="text-[8px] text-slate-400 truncate">{cName}</div>}
+            </div>
+          );
+        })}
+      </div>
+      <button onClick={()=>onTabChange("slots")} className="mt-3 w-full py-2 rounded-xl text-xs font-bold border" style={{borderColor:"#0d6efd",color:"#0d6efd"}}>
+        View & book slots →
+      </button>
+    </div>
+  );
+}
+
 function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUser, memberName, onAddSlot, onBookSlot, onFreeSlot, showAddSlot, setShowAddSlot }) {
   const [selDate, setSelDate]   = useState(todayStr());
   const [selCounsellor, setSelCounsellor] = useState("all");

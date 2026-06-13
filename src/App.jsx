@@ -101,6 +101,7 @@ export default function App() {
   const [selected,setSelected]   = useState(null);
   const [selLeads,setSelLeads]   = useState(new Set());
   const [showAdd,setShowAdd]     = useState(false);
+  const [showDistribute,setShowDistribute] = useState(false);
   const [showAddTeam,setShowAddTeam]   = useState(false);
   const [showSettings,setShowSettings] = useState(false);
   const [showExport,setShowExport]     = useState(false);
@@ -235,6 +236,23 @@ export default function App() {
     notify(`${selLeads.size} leads → ${memberName(cId)}`);
     setSelLeads(new Set());
   };
+  // Distribute selected leads equally or custom among BDEs
+  const distributeLeads = async (assignments) => {
+    // assignments = [{ bdeId, leadIds[] }]
+    try {
+      notify("Distributing leads…");
+      for (const { bdeId, leadIds } of assignments) {
+        for (const id of leadIds) {
+          await updStudent(id, { bde_id: bdeId });
+        }
+      }
+      const total = assignments.reduce((s,a)=>s+a.leadIds.length,0);
+      notify(`${total} leads distributed across ${assignments.length} BDEs`);
+      setSelLeads(new Set());
+      setShowDistribute(false);
+    } catch(e) { notify("Distribution failed: "+e.message); }
+  };
+
   const bulkDelete = async () => {
     if (selLeads.size===0) return;
     if (!window.confirm(`Delete ${selLeads.size} lead(s)? This cannot be undone.`)) return;
@@ -605,6 +623,7 @@ export default function App() {
                     <option value="" disabled>Assign to Counsellor…</option>
                     {counsellors.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
+                  <button onClick={()=>setShowDistribute(true)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-white text-xs font-bold" style={{background:T.purple}}>⚡ Distribute</button>
                   <button onClick={bulkDelete} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-white text-xs font-bold" style={{background:T.danger}}><Trash2 size={13}/> Delete</button>
                   <button onClick={()=>setSelLeads(new Set())} className="ml-auto text-xs text-slate-400 hover:text-slate-700">Clear</button>
                 </div>
@@ -717,6 +736,14 @@ export default function App() {
       {showAdd && (isAdmin||isBDE) && <AddStudentModal team={team} isBDE={isBDE} currentUser={currentUser} onClose={()=>setShowAdd(false)} onSave={doAddStudent}/>}
       {showAddTeam && isAdmin && <AddTeamModal onClose={()=>setShowAddTeam(false)} onSave={doAddTeam}/>}
       {showImport && isAdmin && <ImportModal team={team} onClose={()=>setShowImport(false)} onImport={doBulkImport}/>}
+      {showDistribute && isAdmin && (
+        <DistributeModal
+          leads={[...selLeads].map(id=>students.find(s=>s.id===id)).filter(Boolean)}
+          bdeList={bdeList}
+          onClose={()=>setShowDistribute(false)}
+          onDistribute={distributeLeads}
+        />
+      )}
 
       {showExport && isAdmin && (
         <Modal title="Export leads" onClose={()=>setShowExport(false)}>
@@ -1925,6 +1952,141 @@ function SecuritySection({ security, onSave }) {
         {(security.adminPass||security.exportPass) && <button onClick={()=>onSave({adminPass:"",exportPass:""})} className="px-3 py-2 rounded-xl border text-xs font-semibold text-slate-500" style={{borderColor:T.line}}>Clear all</button>}
       </div>
     </div>
+  );
+}
+
+/* ════ DISTRIBUTE LEADS MODAL ════ */
+function DistributeModal({ leads, bdeList, onClose, onDistribute }) {
+  const [mode, setMode]     = useState("equal"); // "equal" | "custom"
+  const [custom, setCustom] = useState(
+    // default: each BDE gets 0
+    Object.fromEntries(bdeList.map(b=>[b.id, ""]))
+  );
+  const [selBDEs, setSelBDEs] = useState(
+    new Set(bdeList.map(b=>b.id))
+  );
+
+  const total = leads.length;
+  const activeBDEs = bdeList.filter(b=>selBDEs.has(b.id));
+
+  // Equal split calculation
+  const equalSplit = () => {
+    if (activeBDEs.length===0) return {};
+    const base  = Math.floor(total/activeBDEs.length);
+    const extra = total % activeBDEs.length;
+    const result = {};
+    activeBDEs.forEach((b,i)=>{ result[b.id] = base + (i<extra?1:0); });
+    return result;
+  };
+
+  const split = mode==="equal" ? equalSplit() : custom;
+  const totalAssigned = Object.values(split).reduce((s,v)=>s+parseInt(v||0),0);
+  const remaining = total - totalAssigned;
+
+  const handleConfirm = () => {
+    const shuffled = [...leads].sort(()=>Math.random()-0.5);
+    const assignments = [];
+    let cursor = 0;
+    for (const b of activeBDEs) {
+      const count = parseInt(split[b.id]||0);
+      if (count>0) {
+        assignments.push({ bdeId:b.id, leadIds: shuffled.slice(cursor,cursor+count).map(s=>s.id) });
+        cursor += count;
+      }
+    }
+    onDistribute(assignments);
+  };
+
+  const toggleBDE = (id) => setSelBDEs(prev=>{
+    const n=new Set(prev); n.has(id)?n.delete(id):n.add(id); return n;
+  });
+
+  return (
+    <Modal title="⚡ Distribute Leads to BDEs" onClose={onClose}>
+      <div className="space-y-4">
+        {/* Total */}
+        <div className="p-3 rounded-xl text-center font-bold text-lg" style={{background:"#EFF6FF",color:T.blue}}>
+          {total} leads selected for distribution
+        </div>
+
+        {/* Mode toggle */}
+        <div className="flex gap-2">
+          <button onClick={()=>setMode("equal")}
+            className="flex-1 py-2.5 rounded-xl text-sm font-bold border-2 transition"
+            style={{borderColor:mode==="equal"?T.blue:T.line,background:mode==="equal"?"#EFF6FF":"#fff",color:mode==="equal"?T.blue:"#64748B"}}>
+            Equal split
+          </button>
+          <button onClick={()=>setMode("custom")}
+            className="flex-1 py-2.5 rounded-xl text-sm font-bold border-2 transition"
+            style={{borderColor:mode==="custom"?T.purple:T.line,background:mode==="custom"?"#F5F3FF":"#fff",color:mode==="custom"?T.purple:"#64748B"}}>
+            Custom split
+          </button>
+        </div>
+
+        {/* BDE list */}
+        <div className="space-y-2">
+          {bdeList.map(b=>{
+            const count = parseInt(split[b.id]||0);
+            const pct   = total>0 ? Math.round(count/total*100) : 0;
+            const isOn  = selBDEs.has(b.id);
+            return (
+              <div key={b.id} className="p-3 rounded-xl border-2 transition"
+                style={{borderColor:isOn?T.teal:T.line, background:isOn?"#F0FDFA":"#F8FAFC", opacity:isOn?1:0.5}}>
+                <div className="flex items-center gap-3">
+                  <button onClick={()=>toggleBDE(b.id)}
+                    className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-white text-sm shrink-0"
+                    style={{background:isOn?T.teal:"#CBD5E1"}}>{b.name[0]}</button>
+                  <div className="flex-1">
+                    <div className="font-bold text-sm">{b.name}</div>
+                    {mode==="equal" ? (
+                      <div className="text-xs text-slate-500">{count} leads ({pct}%)</div>
+                    ) : (
+                      <input
+                        type="number" min="0" max={total}
+                        value={custom[b.id]||""}
+                        onChange={e=>setCustom(p=>({...p,[b.id]:e.target.value}))}
+                        placeholder="0"
+                        disabled={!isOn}
+                        className="mt-1 w-28 py-1 px-2 rounded-lg border text-sm font-semibold"
+                        style={{borderColor:"#CBD5E1"}}
+                      />
+                    )}
+                  </div>
+                  {mode==="equal" && count>0 && (
+                    <div className="text-right">
+                      <div className="text-lg font-extrabold num" style={{color:T.teal}}>{count}</div>
+                      <div className="text-[10px] text-slate-400">leads</div>
+                    </div>
+                  )}
+                </div>
+                {/* Progress bar */}
+                {count>0 && (
+                  <div className="mt-2 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                    <div className="h-full rounded-full transition-all" style={{width:`${pct}%`,background:T.teal}}/>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Summary */}
+        <div className="flex items-center justify-between p-3 rounded-xl" style={{background:remaining!==0?"#FEF2F2":"#F0FDF4"}}>
+          <span className="text-sm font-semibold" style={{color:remaining!==0?"#DC2626":"#16A34A"}}>
+            {remaining===0 ? "All leads accounted for ✓" : remaining>0 ? `${remaining} leads not assigned yet` : `${Math.abs(remaining)} leads over-assigned`}
+          </span>
+          <span className="text-sm font-bold num">{totalAssigned} / {total}</span>
+        </div>
+
+        <button
+          onClick={handleConfirm}
+          disabled={totalAssigned===0||remaining<0}
+          className="w-full py-3 rounded-xl text-white font-bold text-sm disabled:opacity-40"
+          style={{background:T.teal}}>
+          Distribute {totalAssigned} leads across {activeBDEs.filter(b=>parseInt(split[b.id]||0)>0).length} BDEs
+        </button>
+      </div>
+    </Modal>
   );
 }
 

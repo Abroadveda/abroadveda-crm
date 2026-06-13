@@ -132,13 +132,14 @@ export default function App() {
   /* ── Visible students ── */
   const visibleStudents = useMemo(() => {
     if (!currentUser || isAdmin) return students;
-    if (isBDE) return students.filter((s) => s.assigned_to===currentUser.id && s.stage==="lead");
+    // BDE sees ALL their assigned students at every stage (accommodation support throughout journey)
+    if (isBDE) return students.filter((s) => s.bde_id===currentUser.id || (s.assigned_to===currentUser.id && s.stage==="lead"));
     if (isCounsel) return students.filter((s) => s.assigned_to===currentUser.id && ["counsel","shortlist","applied","offer","finance"].includes(s.stage));
     if (role==="Visa Officer") return students.filter((s) => s.assigned_to===currentUser.id && ["visa","predep","departed"].includes(s.stage));
     return [];
   }, [students, currentUser, isAdmin, isBDE, isCounsel, role]);
 
-  const pendingAssignment = useMemo(() => students.filter((s) => s.stage==="lead" && !s.assigned_to), [students]);
+  const pendingAssignment = useMemo(() => students.filter((s) => s.stage==="lead" && !s.bde_id && !s.assigned_to), [students]);
   const readyForCounsel   = useMemo(() => students.filter((s) => s.stage==="counsel" && s.assigned_to && !counsellors.find((c)=>c.id===s.assigned_to)), [students, counsellors]);
   const memberName = (id) => team.find((t) => t.id===id)?.name || "";
   const memberRole = (id) => team.find((t) => t.id===id)?.role || "";
@@ -184,8 +185,22 @@ export default function App() {
     catch(e) { notify("Could not save note"); }
   };
   const assignToBDE = async (studentId, bdeId) => {
-    await updStudent(studentId, { assigned_to:bdeId });
-    notify(`Lead assigned to ${memberName(bdeId)} ✓`);
+    if (bdeId === "remove") {
+      await updStudent(studentId, { bde_id: null });
+      await doAddNote(studentId, `🔄 BDE removed by Admin.`);
+      notify("BDE removed — student no longer visible to previous BDE");
+      return;
+    }
+    const prevBde = students.find((s)=>s.id===studentId)?.bde_id;
+    await updStudent(studentId, { bde_id: bdeId });
+    const bdeName = memberName(bdeId);
+    if (prevBde && prevBde !== bdeId) {
+      await doAddNote(studentId, `🔄 BDE reassigned from ${memberName(prevBde)} to ${bdeName} by Admin.`);
+      notify(`BDE changed to ${bdeName} ✓ — removed from previous BDE's view`);
+    } else {
+      await doAddNote(studentId, `✅ BDE assigned: ${bdeName}`);
+      notify(`BDE assigned to ${bdeName} ✓`);
+    }
   };
   const assignCounsellor = async (studentId, counsellorId) => {
     await updStudent(studentId, { assigned_to:counsellorId, stage:"counsel" });
@@ -194,7 +209,10 @@ export default function App() {
   };
   const doAddStudent = async (form) => {
     try {
-      const rec = await createStudent(form);
+      // If added by BDE, store their ID as bde_id (permanent link even after counsellor assigned)
+      const finalForm = { ...form };
+      if (isBDE) { finalForm.bde_id = currentUser.id; finalForm.assigned_to = currentUser.id; }
+      const rec = await createStudent(finalForm);
       await Promise.all(DEFAULT_DOCS.map((n) => upsertDocument({student_id:rec.id,name:n,status:"Pending"})));
       const refreshed = await getStudents(); setStudents(refreshed);
       setShowAdd(false); notify("Lead saved ✓");
@@ -562,7 +580,13 @@ export default function App() {
                           </td>
                           <td className="p-3 text-xs">{s.level} · {s.country}<div className="text-slate-400">{s.field}</div></td>
                           <td className="p-3"><span className="text-[11px] font-bold px-2 py-1 rounded-lg" style={{background:st.color+"15",color:st.color}}>{st.label}</span></td>
-                          <td className="p-3 text-xs">{memberName(s.assigned_to)||<span className="text-red-500 font-semibold text-[11px]">Unassigned</span>}</td>
+                          <td className="p-3 text-xs">
+                            <div className="space-y-0.5">
+                              {s.bde_id && <div className="flex items-center gap-1"><span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{background:T.teal+"15",color:T.teal}}>BDE</span><span>{memberName(s.bde_id)}</span></div>}
+                              {counsellors.find((c)=>c.id===s.assigned_to) && <div className="flex items-center gap-1"><span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{background:T.blue+"15",color:T.blue}}>CNS</span><span>{memberName(s.assigned_to)}</span></div>}
+                              {!s.bde_id && !s.assigned_to && <span className="text-red-500 font-semibold text-[11px]">Unassigned</span>}
+                            </div>
+                          </td>
                           <td className="p-3 text-xs num">{s.follow_up?<span className={isOverdue(s)?"font-bold text-red-600":""}>{s.follow_up}</span>:<span className="text-slate-300">—</span>}</td>
                           <td className="p-3" onClick={(e)=>e.stopPropagation()}>
                             <div className="flex gap-1">
@@ -925,6 +949,22 @@ function StudentDetail({ s, team, counsellors, memberName, role, rm, isAdmin, is
               <span className="flex items-center gap-1"><Mail size={12}/> {s.email||"—"}</span>
               <span className="flex items-center gap-1"><Globe2 size={12}/> {s.level} · {s.country} · {s.intake}</span>
             </div>
+            {/* BDE + Counsellor assignment badges */}
+            <div className="flex flex-wrap gap-2 mt-2">
+              {s.bde_id && (
+                <span className="flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg" style={{background:T.teal+"15",color:T.teal}}>
+                  <Briefcase size={11}/> BDE: {memberName(s.bde_id)}
+                </span>
+              )}
+              {counsellors.find((c)=>c.id===s.assigned_to) && (
+                <span className="flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg" style={{background:T.blue+"15",color:T.blue}}>
+                  <Users size={11}/> Counsellor: {memberName(s.assigned_to)}
+                </span>
+              )}
+              {!s.bde_id && !counsellors.find((c)=>c.id===s.assigned_to) && (
+                <span className="text-[11px] text-red-500 font-semibold">No assignment yet</span>
+              )}
+            </div>
             <div className="flex items-center gap-1.5 mt-2 flex-wrap">
               <span className="text-[10px] font-semibold text-slate-400">Qual:</span>
               {["Hot","Warm","Cold"].map((q)=>(
@@ -982,22 +1022,49 @@ function StudentDetail({ s, team, counsellors, memberName, role, rm, isAdmin, is
           )}
         </div>
 
-        {/* Admin: assign BDE + Counsellor */}
+        {/* Admin: assign BDE + Counsellor separately */}
         {isAdmin && (
-          <div className="mt-4 grid sm:grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-semibold text-slate-500">Assign BDE</label>
-              <select value={s.stage==="lead"?s.assigned_to||"":""} onChange={(e)=>e.target.value&&onAssignBDE(s.id,e.target.value)} style={inp}>
-                <option value="">{memberName(s.assigned_to)||"Unassigned"}</option>
-                {team.filter((t)=>t.role==="BDE").map((t)=><option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+          <div className="mt-4 space-y-3">
+            {/* BDE Assignment */}
+            <div className="p-3 rounded-xl border" style={{borderColor:T.teal+"55", background:T.teal+"08"}}>
+              <label className="text-xs font-bold flex items-center gap-1.5 mb-2" style={{color:T.teal}}>
+                <Briefcase size={12}/> BDE (stays linked throughout journey)
+              </label>
+              <div className="flex gap-2">
+                <select
+                  value={s.bde_id||""}
+                  onChange={(e) => e.target.value && onAssignBDE(s.id, e.target.value)}
+                  className="flex-1 py-2 px-2 rounded-xl border text-sm bg-white font-medium"
+                  style={{borderColor:T.line}}>
+                  <option value="">{s.bde_id ? memberName(s.bde_id) : "No BDE assigned"}</option>
+                  {team.filter((t)=>t.role==="BDE").map((t)=><option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+                {s.bde_id && (
+                  <button
+                    onClick={()=>{ if(window.confirm("Remove BDE from this student? They will no longer see this student.")) onAssignBDE(s.id,"remove"); }}
+                    className="px-3 py-2 rounded-xl border text-xs font-semibold text-red-500 hover:bg-red-50"
+                    style={{borderColor:"#FECACA"}}>
+                    Remove
+                  </button>
+                )}
+              </div>
+              {s.bde_id && <p className="text-[11px] mt-1.5" style={{color:T.teal}}>✓ {memberName(s.bde_id)} can see this student at all stages</p>}
             </div>
-            <div>
-              <label className="text-xs font-semibold text-slate-500">Assign Counsellor</label>
-              <select value={""} onChange={(e)=>e.target.value&&onAssignCounsellor(s.id,e.target.value)} style={inp}>
+
+            {/* Counsellor Assignment */}
+            <div className="p-3 rounded-xl border" style={{borderColor:T.blue+"55", background:T.blue+"08"}}>
+              <label className="text-xs font-bold flex items-center gap-1.5 mb-2" style={{color:T.blue}}>
+                <Users size={12}/> Counsellor (handles session & application)
+              </label>
+              <select
+                value={counsellors.find((c)=>c.id===s.assigned_to)?s.assigned_to:""}
+                onChange={(e)=>e.target.value&&onAssignCounsellor(s.id,e.target.value)}
+                className="w-full py-2 px-2 rounded-xl border text-sm bg-white font-medium"
+                style={{borderColor:T.line}}>
                 <option value="">{counsellors.find((c)=>c.id===s.assigned_to)?.name||"Select counsellor…"}</option>
                 {counsellors.map((c)=><option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
+              {counsellors.find((c)=>c.id===s.assigned_to) && <p className="text-[11px] mt-1.5" style={{color:T.blue}}>✓ {memberName(s.assigned_to)} is handling the counselling session</p>}
             </div>
           </div>
         )}

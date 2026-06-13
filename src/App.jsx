@@ -62,8 +62,8 @@ const HEAR_SOURCES = ["School/College Visit","Friend or Family","Social Media","
 const FIN_SOURCES  = ["Parents","Self-funded","Education Loan","Scholarship","Sponsor"];
 const CALL_OUTCOMES = ["Not reachable","No answer — callback later","Busy — try again","Wrong number","Not interested","Interested — follow-up needed","Counselling booked","WhatsApp message sent"];
 const MEET_TYPES = ["Google Meet","Zoom","Microsoft Teams","Phone call","In-person"];
-const SLOT_TIMES = ["11:00","12:00","13:00","14:00","15:00","16:00","17:00","18:00"];
-const SLOT_LABELS = {"11:00":"11 AM – 12 PM","12:00":"12 PM – 1 PM","13:00":"1 PM – 2 PM","14:00":"2 PM – 3 PM","15:00":"3 PM – 4 PM","16:00":"4 PM – 5 PM","17:00":"5 PM – 6 PM","18:00":"6 PM – 7 PM"};
+const SLOT_TIMES = ["11:00","12:00","13:00","14:00","15:00","16:00","17:00"];
+const SLOT_LABELS = {"11:00":"11 AM – 12 PM","12:00":"12 PM – 1 PM","13:00":"1 PM – 2 PM","14:00":"2 PM – 3 PM","15:00":"3 PM – 4 PM","16:00":"4 PM – 5 PM","17:00":"5 PM – 6 PM"};
 
 const hashPw   = (s) => { let h=5381; for(let i=0;i<s.length;i++) h=((h<<5)+h+s.charCodeAt(i))>>>0; return "h"+h.toString(36); };
 const stageIdx = (id) => STAGES.findIndex((s) => s.id===id);
@@ -1231,9 +1231,11 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
     return { type:"available", slot:sl };
   };
 
-  // For BDE: show all counsellors on selected date
-  // For Admin/Counsellor: show full schedule with management
-  const displayCounsellors = selCounsellor==="all" ? counsellors : counsellors.filter(c=>c.id===selCounsellor);
+  // Counsellor sees only their own schedule
+  // BDE and Admin see all counsellors
+  const displayCounsellors = isCounsel
+    ? counsellors.filter(c=>c.id===currentUser.id)
+    : selCounsellor==="all" ? counsellors : counsellors.filter(c=>c.id===selCounsellor);
 
   // Today booked count for dashboard hint
   const todayBooked = slots.filter(s=>s.slot_date===todayStr()&&s.status==="booked").length;
@@ -1260,12 +1262,16 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
 
   const confirmBook = async () => {
     if (!bookingSlot) return;
-    let slotId = bookingSlot.slotId;
+    // If rebook, free the current slot first
+    if (bookingSlot.isRebook && bookingSlot.slotId) {
+      await onFreeSlot(bookingSlot.slotId);
+    }
+    let slotId = bookingSlot.isRebook ? null : bookingSlot.slotId;
     if (!slotId) {
-      // create slot first then book
+      // create a new slot then book it
       await onAddSlot({ counsellor_id:bookingSlot.counsellorId, slot_date:selDate, slot_time:bookingSlot.time, status:"available" });
-      // find the newly created slot
-      const fresh = slots.find(s=>s.counsellor_id===bookingSlot.counsellorId&&s.slot_date===selDate&&s.slot_time===bookingSlot.time);
+      // find the newly created slot after state update
+      const fresh = slots.find(s=>s.counsellor_id===bookingSlot.counsellorId&&s.slot_date===selDate&&s.slot_time===bookingSlot.time&&s.status==="available");
       if (fresh) slotId = fresh.id;
     }
     if (slotId) {
@@ -1358,19 +1364,25 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
                   {type==="booked" ? (
                     <div>
                       <div className="text-[9px] font-bold text-red-700 mt-1 truncate" title={bookedStudentName}>{bookedStudentName||"Booked"}</div>
-                      <div className="flex gap-1 mt-1">
+                      <div className="flex flex-col gap-1 mt-1">
+                    {(isAdmin||isBDE) && <button onClick={()=>{
+                      setBookingSlot({ slotId:slot.id, time, label:SLOT_LABELS[time]||time, counsellorName:c.name, counsellorId:c.id, isRebook:true, currentStudentId:slot.booked_by });
+                      setBookStudentId(slot.booked_by||"");
+                    }} className="text-[9px] font-bold px-1 py-1 rounded border text-blue-600 border-blue-200 bg-blue-50 w-full">
+                      Change slot
+                    </button>}
                     <button onClick={()=>{
                       if(window.confirm(`Cancel booking for ${bookedName||"this student"}?`)){
                         onFreeSlot(slot.id);
                       }
-                    }} className="flex-1 text-[9px] font-bold px-1 py-1 rounded border text-orange-600 border-orange-200 bg-orange-50">
+                    }} className="text-[9px] font-bold px-1 py-1 rounded border text-orange-600 border-orange-200 bg-orange-50 w-full">
                       Cancel
                     </button>
                     {isAdmin && <button onClick={()=>{
                       if(window.confirm("Delete this slot permanently?")){
                         onDeleteSlot(slot.id);
                       }
-                    }} className="flex-1 text-[9px] font-bold px-1 py-1 rounded border text-red-600 border-red-200 bg-red-50">
+                    }} className="text-[9px] font-bold px-1 py-1 rounded border text-red-600 border-red-200 bg-red-50 w-full">
                       Delete
                     </button>}
                   </div>
@@ -1399,7 +1411,7 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
 
       {/* BDE Booking confirmation modal */}
       {bookingSlot && (
-        <Modal title="Book counselling slot" onClose={()=>setBookingSlot(null)}>
+        <Modal title={bookingSlot?.isRebook ? "Change counselling slot" : "Book counselling slot"} onClose={()=>setBookingSlot(null)}>
           <div className="space-y-3">
             <div className="p-3 rounded-xl" style={{background:T.teal+"15"}}>
               <div className="font-bold text-sm" style={{color:T.teal}}>{bookingSlot.counsellorName}</div>
@@ -1408,7 +1420,7 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
             <label className="block text-xs font-semibold text-slate-500">Select student for this slot
               <select value={bookStudentId} onChange={e=>setBookStudentId(e.target.value)} style={inp}>
                 <option value="">Select student…</option>
-                {students.filter(s=>s.bde_id===currentUser.id||!s.bde_id).map(s=><option key={s.id} value={s.id}>{s.name} — {s.phone}</option>)}
+                {students.filter(s=>isBDE?(s.bde_id===currentUser.id):true).map(s=><option key={s.id} value={s.id}>{s.name} — {s.phone}</option>)}
               </select>
             </label>
             <p className="text-[11px] text-slate-400">After booking, the slot will show as <strong>Booked</strong> and the student will be linked to this session.</p>

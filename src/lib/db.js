@@ -23,12 +23,26 @@ export async function updateStudent(id, patch) {
   return data
 }
 export async function deleteStudent(id) {
+  // Delete related records first to avoid FK constraint errors
+  await supabase.from('notes').delete().eq('student_id', id)
+  await supabase.from('applications').delete().eq('student_id', id)
+  await supabase.from('documents').delete().eq('student_id', id)
   const { error } = await supabase.from('students').delete().eq('id', id)
   if (error) throw error
 }
 export async function bulkDeleteStudents(ids) {
-  const { error } = await supabase.from('students').delete().in('id', ids)
-  if (error) throw error
+  if (!ids || ids.length === 0) return
+  // Delete in batches of 50 to avoid URL length limits
+  const batches = []
+  for (let i = 0; i < ids.length; i += 50) batches.push(ids.slice(i, i + 50))
+  for (const batch of batches) {
+    // Delete related records first
+    await supabase.from('notes').delete().in('student_id', batch)
+    await supabase.from('applications').delete().in('student_id', batch)
+    await supabase.from('documents').delete().in('student_id', batch)
+    const { error } = await supabase.from('students').delete().in('id', batch)
+    if (error) throw error
+  }
 }
 
 /* ── NOTES ── */

@@ -9,9 +9,7 @@ export async function getStudents() {
   if (error) throw error
   return data || []
 }
-
 export async function createStudent(s) {
-  // strip unknown keys
   const allowed = ['name','phone','email','level','country','intake','field','stage','qualification','assigned_to','bde_id','follow_up','gender','dob','nationality','city','consent_tc','consent_mkt','hear_source','fin_source']
   const clean = {}
   for (const k of allowed) if (s[k] !== undefined && s[k] !== '') clean[k] = s[k]
@@ -19,15 +17,17 @@ export async function createStudent(s) {
   if (error) throw error
   return data
 }
-
 export async function updateStudent(id, patch) {
   const { data, error } = await supabase.from('students').update(patch).eq('id', id).select().single()
   if (error) throw error
   return data
 }
-
 export async function deleteStudent(id) {
   const { error } = await supabase.from('students').delete().eq('id', id)
+  if (error) throw error
+}
+export async function bulkDeleteStudents(ids) {
+  const { error } = await supabase.from('students').delete().in('id', ids)
   if (error) throw error
 }
 
@@ -68,6 +68,11 @@ export async function getTeam() {
 }
 export async function createTeamMember(m) {
   const { data, error } = await supabase.from('team_members').insert([m]).select().single()
+  if (error) throw error
+  return data
+}
+export async function updateTeamMember(id, patch) {
+  const { data, error } = await supabase.from('team_members').update(patch).eq('id', id).select().single()
   if (error) throw error
   return data
 }
@@ -115,4 +120,14 @@ export async function getSetting(key) {
 export async function setSetting(key, value) {
   const { error } = await supabase.from('settings').upsert([{ key, value }])
   if (error) throw error
+}
+
+/* ── DB HEALTH ── */
+export async function checkDbHealth() {
+  try {
+    const start = Date.now()
+    const { data, error } = await supabase.from('students').select('id', { count: 'exact', head: true })
+    if (error) return { ok: false, ms: null }
+    return { ok: true, ms: Date.now() - start }
+  } catch { return { ok: false, ms: null } }
 }

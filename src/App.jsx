@@ -516,10 +516,9 @@ export default function App() {
                   {!visibleStudents.some(s=>s.qualification==="Hot"&&s.stage!=="departed") && <p className="text-sm text-slate-400">No hot leads.</p>}
                 </div>
               </div>
-            </div>
 
-          <TodaySchedule slots={slots} students={students} team={team} isAdmin={isAdmin} isBDE={isBDE} onTabChange={setTab}/>
-        </div>
+              <TodaySchedule slots={slots} students={students} team={team} isAdmin={isAdmin} isBDE={isBDE} onTabChange={setTab}/>
+            </div>
           )}
 
           {/* PIPELINE */}

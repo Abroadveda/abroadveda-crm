@@ -1,61 +1,113 @@
 import { supabase } from './supabase'
 
+/* ── STUDENTS ── */
 export async function getStudents() {
   const { data, error } = await supabase
     .from('students')
     .select(`*, notes(id,text,created_at), applications(id,course,institution,commence_date,status), documents(id,name,status)`)
     .order('created_at', { ascending: false })
   if (error) throw error
+  return data || []
+}
+
+export async function createStudent(s) {
+  // strip unknown keys
+  const allowed = ['name','phone','email','level','country','intake','field','stage','qualification','assigned_to','follow_up','gender','dob','nationality','city','consent_tc','consent_mkt','hear_source','fin_source']
+  const clean = {}
+  for (const k of allowed) if (s[k] !== undefined && s[k] !== '') clean[k] = s[k]
+  const { data, error } = await supabase.from('students').insert([clean]).select().single()
+  if (error) throw error
   return data
 }
-export async function createStudent(student) {
-  const { data, error } = await supabase.from('students').insert([student]).select().single()
-  if (error) throw error; return data
-}
+
 export async function updateStudent(id, patch) {
   const { data, error } = await supabase.from('students').update(patch).eq('id', id).select().single()
-  if (error) throw error; return data
+  if (error) throw error
+  return data
 }
+
 export async function deleteStudent(id) {
   const { error } = await supabase.from('students').delete().eq('id', id)
   if (error) throw error
 }
+
+/* ── NOTES ── */
 export async function addNote(studentId, text) {
   const { data, error } = await supabase.from('notes').insert([{ student_id: studentId, text }]).select().single()
-  if (error) throw error; return data
+  if (error) throw error
+  return data
 }
+
+/* ── APPLICATIONS ── */
 export async function upsertApplication(app) {
   const { data, error } = await supabase.from('applications').upsert([app]).select().single()
-  if (error) throw error; return data
+  if (error) throw error
+  return data
 }
 export async function deleteApplication(id) {
   const { error } = await supabase.from('applications').delete().eq('id', id)
   if (error) throw error
 }
+
+/* ── DOCUMENTS ── */
 export async function upsertDocument(doc) {
   const { data, error } = await supabase.from('documents').upsert([doc]).select().single()
-  if (error) throw error; return data
+  if (error) throw error
+  return data
 }
 export async function deleteDocument(id) {
   const { error } = await supabase.from('documents').delete().eq('id', id)
   if (error) throw error
 }
+
+/* ── TEAM ── */
 export async function getTeam() {
   const { data, error } = await supabase.from('team_members').select('*').order('name')
-  if (error) throw error; return data
+  if (error) throw error
+  return data || []
 }
-export async function createTeamMember(member) {
-  const { data, error } = await supabase.from('team_members').insert([member]).select().single()
-  if (error) throw error; return data
+export async function createTeamMember(m) {
+  const { data, error } = await supabase.from('team_members').insert([m]).select().single()
+  if (error) throw error
+  return data
 }
 export async function deleteTeamMember(id) {
   const { error } = await supabase.from('team_members').delete().eq('id', id)
   if (error) throw error
 }
-export async function bulkInsertStudents(students) {
-  const { data, error } = await supabase.from('students').insert(students).select()
-  if (error) throw error; return data
+
+/* ── SLOTS ── */
+export async function getSlots() {
+  const { data, error } = await supabase.from('counselling_slots').select('*').order('slot_date').order('slot_time')
+  if (error) return []
+  return data || []
 }
+export async function createSlot(slot) {
+  const { data, error } = await supabase.from('counselling_slots').insert([slot]).select().single()
+  if (error) throw error
+  return data
+}
+export async function bookSlot(slotId, studentId) {
+  const { data, error } = await supabase.from('counselling_slots').update({ booked_by: studentId, status: 'booked' }).eq('id', slotId).select().single()
+  if (error) throw error
+  return data
+}
+export async function freeSlot(slotId) {
+  const { data, error } = await supabase.from('counselling_slots').update({ booked_by: null, status: 'available' }).eq('id', slotId).select().single()
+  if (error) throw error
+  return data
+}
+
+/* ── BULK ── */
+export async function bulkInsertStudents(rows) {
+  const allowed = ['name','phone','email','level','country','intake','field','stage','qualification','assigned_to','follow_up']
+  const clean = rows.map((r) => { const o={}; for(const k of allowed) if(r[k]!==undefined&&r[k]!=='') o[k]=r[k]; return o; })
+  const { data, error } = await supabase.from('students').insert(clean).select()
+  if (error) throw error
+  return data
+}
+
+/* ── SETTINGS ── */
 export async function getSetting(key) {
   const { data } = await supabase.from('settings').select('value').eq('key', key).single()
   return data?.value ?? null

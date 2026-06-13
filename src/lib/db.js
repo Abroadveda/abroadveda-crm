@@ -127,6 +127,10 @@ export async function freeSlot(slotId) {
   if (error) throw error
   return data
 }
+export async function deleteSlot(slotId) {
+  const { error } = await supabase.from('counselling_slots').delete().eq('id', slotId)
+  if (error) throw error
+}
 
 /* ── BULK ── */
 export async function bulkInsertStudents(rows) {

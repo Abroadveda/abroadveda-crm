@@ -2,12 +2,23 @@ import { supabase } from './supabase'
 
 /* ── STUDENTS ── */
 export async function getStudents() {
-  const { data, error } = await supabase
-    .from('students')
-    .select(`*, notes(id,text,created_at), applications(id,course,institution,commence_date,status), documents(id,name,status)`)
-    .order('created_at', { ascending: false })
-  if (error) throw error
-  return data || []
+  // Supabase default limit is 1000 rows — fetch all pages
+  const PAGE = 1000
+  let allData = []
+  let from = 0
+  while (true) {
+    const { data, error } = await supabase
+      .from('students')
+      .select(`*, notes(id,text,created_at), applications(id,course,institution,commence_date,status), documents(id,name,status)`)
+      .order('created_at', { ascending: false })
+      .range(from, from + PAGE - 1)
+    if (error) throw error
+    if (!data || data.length === 0) break
+    allData = allData.concat(data)
+    if (data.length < PAGE) break   // last page
+    from += PAGE
+  }
+  return allData
 }
 export async function createStudent(s) {
   const allowed = ['name','phone','email','level','country','intake','field','stage','qualification','assigned_to','bde_id','follow_up','gender','dob','nationality','city','consent_tc','consent_mkt','hear_source','fin_source']
@@ -121,9 +132,16 @@ export async function freeSlot(slotId) {
 export async function bulkInsertStudents(rows) {
   const allowed = ['name','phone','email','level','country','intake','field','stage','qualification','assigned_to','bde_id','follow_up']
   const clean = rows.map((r) => { const o={}; for(const k of allowed) if(r[k]!==undefined&&r[k]!=='') o[k]=r[k]; return o; })
-  const { data, error } = await supabase.from('students').insert(clean).select()
-  if (error) throw error
-  return data
+  // Insert in batches of 500 to avoid Supabase payload limits
+  const BATCH = 500
+  let allData = []
+  for (let i = 0; i < clean.length; i += BATCH) {
+    const batch = clean.slice(i, i + BATCH)
+    const { data, error } = await supabase.from('students').insert(batch).select()
+    if (error) throw error
+    if (data) allData = allData.concat(data)
+  }
+  return allData
 }
 
 /* ── SETTINGS ── */

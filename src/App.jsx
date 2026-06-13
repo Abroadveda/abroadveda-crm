@@ -98,6 +98,7 @@ export default function App() {
   const [filterStage,setFilterStage]     = useState("all");
   const [filterCountry,setFilterCountry] = useState("all");
   const [filterQual,setFilterQual]       = useState("all");
+  const [filterCall,setFilterCall]       = useState("all");
   const [selected,setSelected]   = useState(null);
   const [selLeads,setSelLeads]   = useState(new Set());
   const [showAdd,setShowAdd]     = useState(false);
@@ -160,8 +161,37 @@ export default function App() {
     if (filterStage!=="all" && s.stage!==filterStage) return false;
     if (filterCountry!=="all" && s.country!==filterCountry) return false;
     if (filterQual!=="all" && s.qualification!==filterQual) return false;
+    // Call status filter — looks at last call log note
+    if (filterCall!=="all") {
+      const notes = s.notes||[];
+      const lastCall = [...notes].reverse().find(n=>n.text?.startsWith("📞"));
+      const lastOutcome = lastCall ? lastCall.text.split("\n")[0].replace("📞 CALL — ","") : "never";
+      const today = new Date().toISOString().slice(0,10);
+      if (filterCall==="never" && lastCall) return false;
+      if (filterCall==="never" && !lastCall) return true;
+      if (filterCall==="not_reachable" && !lastOutcome.includes("Not reachable")) return false;
+      if (filterCall==="callback" && !lastOutcome.includes("callback")) return false;
+      if (filterCall==="busy" && !lastOutcome.includes("Busy")) return false;
+      if (filterCall==="interested" && !lastOutcome.includes("Interested")) return false;
+      if (filterCall==="not_interested" && !lastOutcome.includes("Not interested")) return false;
+      if (filterCall==="booked" && !lastOutcome.includes("Counselling")) return false;
+      if (filterCall==="whatsapp" && !lastOutcome.includes("WhatsApp")) return false;
+      if (filterCall==="overdue_callback") {
+        // Has a callback date in past
+        const cbLine = lastCall?.text?.split("\n").find(l=>l.startsWith("Callback:"));
+        if (!cbLine) return false;
+        const cbDate = cbLine.replace("Callback:","").trim().slice(0,10);
+        if (!cbDate || cbDate >= today) return false;
+      }
+      if (filterCall==="callback_today") {
+        const cbLine = lastCall?.text?.split("\n").find(l=>l.startsWith("Callback:"));
+        if (!cbLine) return false;
+        const cbDate = cbLine.replace("Callback:","").trim().slice(0,10);
+        if (cbDate !== today) return false;
+      }
+    }
     return true;
-  }), [visibleStudents, query, filterStage, filterCountry, filterQual]);
+  }), [visibleStudents, query, filterStage, filterCountry, filterQual, filterCall]);
 
   const searchHits = useMemo(() => {
     const q=globalQ.trim().toLowerCase();
@@ -616,6 +646,19 @@ export default function App() {
                 <select value={filterQual} onChange={e=>setFilterQual(e.target.value)} className="py-2 px-2 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:T.line}}><option value="all">All quals</option>{QUALS.map(q=><option key={q.id} value={q.id}>{q.id}</option>)}</select>
                 <select value={filterStage} onChange={e=>setFilterStage(e.target.value)} className="py-2 px-2 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:T.line}}><option value="all">All stages</option>{STAGES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select>
                 <select value={filterCountry} onChange={e=>setFilterCountry(e.target.value)} className="py-2 px-2 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:T.line}}><option value="all">All countries</option>{COUNTRIES.map(c=><option key={c}>{c}</option>)}</select>
+                <select value={filterCall} onChange={e=>setFilterCall(e.target.value)} className="py-2 px-2 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:filterCall!=="all"?"#F59E0B":T.line, color:filterCall!=="all"?"#92400E":"inherit"}}>
+                  <option value="all">All call status</option>
+                  <option value="never">📵 Never called</option>
+                  <option value="callback_today">📅 Callback today</option>
+                  <option value="overdue_callback">⚠️ Overdue callback</option>
+                  <option value="not_reachable">🔴 Not reachable</option>
+                  <option value="busy">🟡 Busy — try again</option>
+                  <option value="callback">🔵 Callback later</option>
+                  <option value="interested">🟢 Interested</option>
+                  <option value="not_interested">⛔ Not interested</option>
+                  <option value="booked">✅ Counselling booked</option>
+                  <option value="whatsapp">💬 WhatsApp sent</option>
+                </select>
               </div>
 
               {/* Bulk action bar */}
@@ -641,7 +684,7 @@ export default function App() {
                   <thead>
                     <tr className="text-left text-[11px] uppercase tracking-wider text-slate-400 border-b" style={{borderColor:T.line}}>
                       {isAdmin && <th className="p-3 w-8"><button onClick={toggleAll}>{selLeads.size===filtered.length&&filtered.length>0?<CheckSquare size={15} style={{color:T.blue}}/>:<Square size={15}/>}</button></th>}
-                      <th className="p-3">Student</th><th className="p-3">Course</th><th className="p-3">Stage</th><th className="p-3">Assigned</th><th className="p-3">Follow-up</th><th className="p-3">Actions</th>
+                      <th className="p-3">Student</th><th className="p-3">Course</th><th className="p-3">Stage</th><th className="p-3">Assigned</th><th className="p-3">Call Status · Follow-up</th><th className="p-3">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -663,7 +706,37 @@ export default function App() {
                             {counsellors.find(c=>c.id===s.assigned_to) && <div className="flex items-center gap-1"><span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{background:T.blue+"15",color:T.blue}}>CNS</span>{memberName(s.assigned_to)}</div>}
                             {!s.bde_id && !s.assigned_to && <span className="text-red-500 font-semibold text-[11px]">Unassigned</span>}
                           </td>
-                          <td className="p-3 text-xs num" onClick={()=>setSelected(s.id)}>{s.follow_up?<span className={isOverdue(s)?"font-bold text-red-600":""}>{s.follow_up}</span>:<span className="text-slate-300">—</span>}</td>
+                          <td className="p-3 text-xs" onClick={()=>setSelected(s.id)}>
+                            {(() => {
+                              const lastCall = [...(s.notes||[])].reverse().find(n=>n.text?.startsWith("📞"));
+                              const outcome = lastCall ? lastCall.text.split("
+")[0].replace("📞 CALL — ","") : null;
+                              const callColor = !outcome ? "#94A3B8"
+                                : outcome.includes("Not reachable") ? "#DC2626"
+                                : outcome.includes("Busy") ? "#F59E0B"
+                                : outcome.includes("callback") ? "#0d6efd"
+                                : outcome.includes("Interested") && !outcome.includes("Not") ? "#16A34A"
+                                : outcome.includes("Not interested") ? "#64748B"
+                                : outcome.includes("Counselling") ? "#14B8A6"
+                                : outcome.includes("WhatsApp") ? "#25D366"
+                                : "#94A3B8";
+                              const shortLabel = !outcome ? "Never called"
+                                : outcome.includes("Not reachable") ? "Not reachable"
+                                : outcome.includes("Busy") ? "Busy"
+                                : outcome.includes("callback") ? "Callback"
+                                : outcome.includes("Interested") && !outcome.includes("Not") ? "Interested"
+                                : outcome.includes("Not interested") ? "Not interested"
+                                : outcome.includes("Counselling") ? "Booked ✓"
+                                : outcome.includes("WhatsApp") ? "WhatsApp"
+                                : outcome?.slice(0,14)||"Called";
+                              return (
+                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{background:callColor+"18",color:callColor}}>
+                                  {shortLabel}
+                                </span>
+                              );
+                            })()}
+                            {s.follow_up && <div className={`text-[11px] mt-0.5 num ${isOverdue(s)?"font-bold text-red-600":"text-slate-400"}`}>{isOverdue(s)?"⚠️ ":""}{s.follow_up}</div>}
+                          </td>
                           <td className="p-3" onClick={e=>e.stopPropagation()}>
                             <div className="flex gap-1">
                               <a href={`tel:${s.phone}`} className="p-2.5 rounded-xl text-white font-bold" style={{background:T.blue}} title="Call"><PhoneCall size={15}/></a>

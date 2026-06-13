@@ -12,7 +12,7 @@ export async function getStudents() {
 
 export async function createStudent(s) {
   // strip unknown keys
-  const allowed = ['name','phone','email','level','country','intake','field','stage','qualification','assigned_to','follow_up','gender','dob','nationality','city','consent_tc','consent_mkt','hear_source','fin_source']
+  const allowed = ['name','phone','email','level','country','intake','field','stage','qualification','assigned_to','bde_id','follow_up','gender','dob','nationality','city','consent_tc','consent_mkt','hear_source','fin_source']
   const clean = {}
   for (const k of allowed) if (s[k] !== undefined && s[k] !== '') clean[k] = s[k]
   const { data, error } = await supabase.from('students').insert([clean]).select().single()
@@ -100,7 +100,7 @@ export async function freeSlot(slotId) {
 
 /* ── BULK ── */
 export async function bulkInsertStudents(rows) {
-  const allowed = ['name','phone','email','level','country','intake','field','stage','qualification','assigned_to','follow_up']
+  const allowed = ['name','phone','email','level','country','intake','field','stage','qualification','assigned_to','bde_id','follow_up']
   const clean = rows.map((r) => { const o={}; for(const k of allowed) if(r[k]!==undefined&&r[k]!=='') o[k]=r[k]; return o; })
   const { data, error } = await supabase.from('students').insert(clean).select()
   if (error) throw error

@@ -14,7 +14,7 @@ import {
   addNote as dbAddNote, upsertApplication, deleteApplication,
   upsertDocument, deleteDocument,
   getTeam, createTeamMember, updateTeamMember, deleteTeamMember,
-  getSlots, createSlot, bookSlot, freeSlot,
+  getSlots, createSlot, bookSlot, freeSlot, deleteSlot,
   bulkInsertStudents, getSetting, setSetting, checkDbHealth
 } from "./lib/db";
 
@@ -312,6 +312,13 @@ export default function App() {
   const doAddSlot    = async (f)     => { try { const s=await createSlot(f); setSlots(p=>[...p,s]); setShowAddSlot(false); notify("Slot added"); } catch { notify("Could not add slot"); } };
   const doBookSlot   = async (slotId,studentId) => { try { const s=await bookSlot(slotId,studentId); setSlots(p=>p.map(x=>x.id===slotId?s:x)); notify("Slot booked"); } catch { notify("Could not book"); } };
   const doFreeSlot   = async (slotId) => { try { const s=await freeSlot(slotId); setSlots(p=>p.map(x=>x.id===slotId?s:x)); notify("Slot freed"); } catch { notify("Could not free slot"); } };
+  const doDeleteSlot = async (slotId) => {
+    try {
+      await deleteSlot(slotId);
+      setSlots(p=>p.filter(x=>x.id!==slotId));
+      notify("Slot deleted");
+    } catch { notify("Could not delete slot"); }
+  };
 
   const doSaveSettings = async (sec) => {
     setSecurity(sec);
@@ -693,7 +700,7 @@ export default function App() {
           {tab==="slots" && (
             <SlotsView slots={slots} team={team} students={students} isAdmin={isAdmin} isBDE={isBDE} isCounsel={isCounsel}
               currentUser={currentUser} memberName={memberName}
-              onAddSlot={doAddSlot} onBookSlot={doBookSlot} onFreeSlot={doFreeSlot}
+              onAddSlot={doAddSlot} onBookSlot={doBookSlot} onFreeSlot={doFreeSlot} onDeleteSlot={doDeleteSlot}
               showAddSlot={showAddSlot} setShowAddSlot={setShowAddSlot}/>
           )}
 
@@ -1132,7 +1139,7 @@ function TodaySchedule({ slots, students, team, isAdmin, isBDE, onTabChange }) {
   );
 }
 
-function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUser, memberName, onAddSlot, onBookSlot, onFreeSlot, showAddSlot, setShowAddSlot }) {
+function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUser, memberName, onAddSlot, onBookSlot, onFreeSlot, onDeleteSlot, showAddSlot, setShowAddSlot }) {
   const [selDate, setSelDate]   = useState(todayStr());
   const [selCounsellor, setSelCounsellor] = useState("all");
   const [bookingSlot, setBookingSlot] = useState(null); // { slotId, time, label, counsellorName }
@@ -1279,15 +1286,37 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
                   {type==="booked" ? (
                     <div>
                       <div className="text-[9px] font-bold text-red-700 mt-1 truncate" title={bookedStudentName}>{bookedStudentName||"Booked"}</div>
-                      {isAdmin && <button onClick={()=>onFreeSlot(slot.id)} className="mt-1 text-[9px] font-bold px-1.5 py-0.5 rounded text-red-600 border border-red-200 w-full">Free</button>}
+                      <div className="flex gap-1 mt-1">
+                    <button onClick={()=>{
+                      if(window.confirm(`Cancel booking for ${bookedName||"this student"}?`)){
+                        onFreeSlot(slot.id);
+                      }
+                    }} className="flex-1 text-[9px] font-bold px-1 py-1 rounded border text-orange-600 border-orange-200 bg-orange-50">
+                      Cancel
+                    </button>
+                    {isAdmin && <button onClick={()=>{
+                      if(window.confirm("Delete this slot permanently?")){
+                        onDeleteSlot(slot.id);
+                      }
+                    }} className="flex-1 text-[9px] font-bold px-1 py-1 rounded border text-red-600 border-red-200 bg-red-50">
+                      Delete
+                    </button>}
+                  </div>
                     </div>
                   ) : (
-                    <button
-                      onClick={()=>doBook(slot,c.id,time,label,c.name)}
-                      className="mt-1.5 text-[9px] font-bold px-1.5 py-1 rounded-lg w-full text-white"
-                      style={{background:type==="available"?T.blue:"#22C55E"}}>
-                      {isBDE?"Book":"+ Set"}
-                    </button>
+                    <div className="flex gap-1 mt-1">
+                      <button
+                        onClick={()=>doBook(slot,c.id,time,label,c.name)}
+                        className="flex-1 text-[9px] font-bold py-1 rounded-lg text-white"
+                        style={{background:type==="available"?T.blue:"#22C55E"}}>
+                        {isBDE?"Book":"Set"}
+                      </button>
+                      {(isAdmin||isCounsel) && slot && <button
+                        onClick={()=>{if(window.confirm("Delete this slot?")) onDeleteSlot(slot.id);}}
+                        className="text-[9px] font-bold px-1.5 py-1 rounded-lg border text-red-500 border-red-200 bg-red-50">
+                        ✕
+                      </button>}
+                    </div>
                   )}
                 </div>
               );

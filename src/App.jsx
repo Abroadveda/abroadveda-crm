@@ -709,8 +709,7 @@ export default function App() {
                           <td className="p-3 text-xs" onClick={()=>setSelected(s.id)}>
                             {(() => {
                               const lastCall = [...(s.notes||[])].reverse().find(n=>n.text?.startsWith("📞"));
-                              const outcome = lastCall ? lastCall.text.split("
-")[0].replace("📞 CALL — ","") : null;
+                              const outcome = lastCall ? lastCall.text.split("\n")[0].replace("📞 CALL — ","") : null;
                               const callColor = !outcome ? "#94A3B8"
                                 : outcome.includes("Not reachable") ? "#DC2626"
                                 : outcome.includes("Busy") ? "#F59E0B"

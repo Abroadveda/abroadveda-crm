@@ -301,8 +301,17 @@ export default function App() {
     catch { notify("Could not save settings"); }
   };
   const doBulkImport = async (rows) => {
-    try { await bulkInsertStudents(rows); const r=await getStudents(); setStudents(r); setShowImport(false); notify(`Imported ${rows.length} leads`); }
-    catch(e) { notify("Import failed: "+e.message); }
+    try {
+      notify(`Importing ${rows.length} leads… please wait`);
+      await bulkInsertStudents(rows);
+      const r = await getStudents();
+      setStudents(r);
+      setShowImport(false);
+      notify(`Imported ${rows.length} leads successfully`);
+    } catch(e) {
+      console.error("Import error:", e);
+      notify("Import failed: " + (e.message || "Unknown error"));
+    }
   };
 
   const exportRows = () => students.map(s=>({ Date:new Date(s.created_at||Date.now()).toLocaleDateString("en-GB"),Name:s.name,Phone:s.phone,Email:s.email||"",Qualification:s.qualification||"",Level:s.level,Country:s.country,Intake:s.intake,"Field":s.field,Stage:stageOf(s.stage).label,"BDE":memberName(s.bde_id),"Counsellor":memberName(s.assigned_to),"Follow Up":s.follow_up||"" }));

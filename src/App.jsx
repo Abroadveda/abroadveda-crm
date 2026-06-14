@@ -146,7 +146,9 @@ export default function App() {
 
   const visibleStudents = useMemo(() => {
     if (!currentUser || isAdmin) return students;
-    if (isBDE) return students.filter(s => s.bde_id===currentUser.id);
+    // BDE sees ALL students where they are the BDE (bde_id) — at every stage
+    // This means BDE can track their students through the entire journey
+    if (isBDE) return students.filter(s => s.bde_id === currentUser.id);
     if (isCounsel) return students.filter(s => s.assigned_to===currentUser.id);
     if (isVisa) return students.filter(s => s.assigned_to===currentUser.id && ["visa","predep","departed"].includes(s.stage));
     return [];
@@ -251,9 +253,12 @@ export default function App() {
   };
 
   const assignCounsellor = async (studentId, cId) => {
-    await updStudent(studentId,{assigned_to:cId, stage:"counsel"});
-    await doAddNote(studentId,`Assigned to ${memberName(cId)} for counselling.`);
-    notify(`Counsellor: ${memberName(cId)}`);
+    if (!cId) return;
+    const cName = memberName(cId);
+    // Directly assign counsellor and move to counsel stage — works for both BDE and Admin
+    await updStudent(studentId, { assigned_to: cId, stage: "counsel" });
+    await doAddNote(studentId, `✅ Counsellor assigned: ${cName} — moved to Counselling stage`);
+    notify(`Assigned to ${cName} → Counselling ✓`);
   };
 
   // Bulk assign
@@ -376,23 +381,32 @@ export default function App() {
   };
   const doBookSlot = async (slotId, studentId) => {
     try {
-      const existingSlot = slots.find(x=>x.id===slotId);
+      // 1. Find the slot BEFORE booking to get counsellor_id
+      const slot = slots.find(x => x.id === slotId);
+      const counsellorId = slot?.counsellor_id;
+
+      // 2. Book the slot in DB
       const bookedSlot = await bookSlot(slotId, studentId);
-      setSlots(p=>p.map(x=>x.id===slotId?bookedSlot:x));
-      const counsellorId = existingSlot?.counsellor_id || bookedSlot?.counsellor_id;
+      setSlots(p => p.map(x => x.id === slotId ? bookedSlot : x));
+
+      // 3. Assign counsellor to student + move to Counselling stage
       if (counsellorId && studentId) {
-        const slotDate = existingSlot?.slot_date || bookedSlot?.slot_date || "";
-        const slotTime = existingSlot?.slot_time || bookedSlot?.slot_time || "";
-        const cName = memberName(counsellorId) || "counsellor";
-        // Assign counsellor + move to counsel stage — BDE still sees student via bde_id
+        const cName = memberName(counsellorId);
+        const slotDate = slot?.slot_date || "";
+        const slotTime = slot?.slot_time || "";
+        const stName = students.find(s => s.id === studentId)?.name || "Student";
+
+        // THIS is the critical step — assign counsellor and move stage
         await updStudent(studentId, { assigned_to: counsellorId, stage: "counsel" });
-        await doAddNote(studentId, `📅 Counselling booked by BDE — ${cName} on ${slotDate} at ${slotTime}. No admin approval needed.`);
-        const stName = students.find(s=>s.id===studentId)?.name||"Student";
-        notify(`Booked ✓ — ${stName} → ${cName} on ${slotDate} at ${slotTime}`);
+        await doAddNote(studentId, `📅 Counselling booked — ${cName} on ${slotDate} at ${slotTime}`);
+        notify(`✓ ${stName} → ${cName} on ${slotDate} at ${slotTime}`);
       } else {
         notify("Slot booked ✓");
       }
-    } catch(e) { notify("Could not book: " + e.message); console.error(e); }
+    } catch(e) {
+      notify("Booking failed: " + e.message);
+      console.error("doBookSlot error:", e);
+    }
   };
   const doFreeSlot   = async (slotId) => { try { const s=await freeSlot(slotId); setSlots(p=>p.map(x=>x.id===slotId?s:x)); notify("Slot freed"); } catch { notify("Could not free slot"); } };
   const doDeleteSlot = async (slotId) => {
@@ -1834,7 +1848,7 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
           )}
         </div>
 
-        {/* Admin assignment */}
+        {/* Admin assignment panel */}
         {isAdmin && (
           <div className="mt-4 grid sm:grid-cols-2 gap-3">
             <div className="p-3 rounded-xl border" style={{borderColor:T.teal+"55",background:T.teal+"08"}}>
@@ -1854,6 +1868,30 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
                 {counsellors.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             </div>
+          </div>
+        )}
+
+        {/* BDE can also assign counsellor directly — no admin needed */}
+        {isBDE && (
+          <div className="mt-4 p-3 rounded-xl border" style={{borderColor:T.blue+"55",background:T.blue+"08"}}>
+            <label className="text-xs font-bold flex items-center gap-1.5 mb-2" style={{color:T.blue}}>
+              <Users size={12}/> Assign counsellor
+              <span className="ml-1 text-[10px] font-normal text-slate-400">— no admin approval needed</span>
+            </label>
+            {counsellors.find(c=>c.id===s.assigned_to) ? (
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold flex-1" style={{color:T.blue}}>✓ {memberName(s.assigned_to)} assigned</span>
+                <select defaultValue="" onChange={e=>e.target.value&&onAssignCounsellor(s.id,e.target.value)} className="py-1.5 px-2 rounded-xl border text-xs bg-white font-medium" style={{borderColor:T.line}}>
+                  <option value="">Change counsellor…</option>
+                  {counsellors.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
+            ) : (
+              <select defaultValue="" onChange={e=>e.target.value&&onAssignCounsellor(s.id,e.target.value)} className="w-full py-2 px-2 rounded-xl border text-sm bg-white font-medium" style={{borderColor:T.line}}>
+                <option value="">Select counsellor to assign…</option>
+                {counsellors.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            )}
           </div>
         )}
 

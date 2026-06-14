@@ -157,23 +157,33 @@ export default function App() {
   const pendingAssignment = useMemo(() => students.filter(s => s.stage==="lead" && !s.bde_id && !s.assigned_to), [students]);
   const memberName = (id) => team.find(t => t.id===id)?.name || "";
 
+  // Debounced query — only filter after user stops typing 250ms
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query), 250);
+    return () => clearTimeout(t);
+  }, [query]);
+
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = debouncedQuery.trim().toLowerCase();
     const digits = q.replace(/[^0-9]/g, "");
-    return visibleStudents.filter(s => {
-      // Fast text search — name/email/country or phone digits
+
+    let results = visibleStudents.filter(s => {
+      // Name/phone search — fast, no note parsing
       if (q) {
-        const textMatch = `${s.name} ${s.email||""} ${s.country||""}`.toLowerCase().includes(q);
+        const nameMatch = (s.name||"").toLowerCase().includes(q);
         const phoneMatch = digits.length >= 2 && (s.phone||"").replace(/[^0-9]/g,"").includes(digits);
-        if (!textMatch && !phoneMatch) return false;
+        const emailMatch = (s.email||"").toLowerCase().includes(q);
+        if (!nameMatch && !phoneMatch && !emailMatch) return false;
       }
       if (filterStage!=="all" && s.stage!==filterStage) return false;
       if (filterCountry!=="all" && s.country!==filterCountry) return false;
       if (filterQual!=="all" && s.qualification!==filterQual) return false;
+      // Only parse notes for call filter (expensive — only when needed)
       if (filterCall!=="all") {
         const notes = s.notes||[];
         const lastCall = [...notes].reverse().find(n=>n.text?.startsWith("📞"));
-        const lastOutcome = lastCall ? lastCall.text.split("\n")[0].replace("📞 CALL — ","") : "never";
+        const lastOutcome = lastCall ? lastCall.text.split("\n")[0].replace("📞 CALL — ","") : "";
         const today = new Date().toISOString().slice(0,10);
         if (filterCall==="never" && lastCall) return false;
         if (filterCall==="never" && !lastCall) return true;
@@ -199,7 +209,20 @@ export default function App() {
       }
       return true;
     });
-  }, [visibleStudents, query, filterStage, filterCountry, filterQual, filterCall]);
+
+    // When searching by name, sort exact matches to top
+    if (q && !digits) {
+      results = results.sort((a, b) => {
+        const aName = (a.name||"").toLowerCase();
+        const bName = (b.name||"").toLowerCase();
+        const aStarts = aName.startsWith(q) ? 0 : 1;
+        const bStarts = bName.startsWith(q) ? 0 : 1;
+        return aStarts - bStarts;
+      });
+    }
+
+    return results;
+  }, [visibleStudents, debouncedQuery, filterStage, filterCountry, filterQual, filterCall]);
 
   const searchHits = useMemo(() => {
     const q=globalQ.trim().toLowerCase().replace(/\s+/g,"");
@@ -712,12 +735,9 @@ export default function App() {
                     value={query}
                     onChange={e => {
                       setQuery(e.target.value);
-                      // When typing a name/number, clear stage filter so all stages are searched
                       if (e.target.value.trim()) setFilterStage("all");
-                      // Scroll table to top
-                      setTimeout(() => {
-                        document.getElementById("students-table")?.scrollIntoView({ behavior:"smooth", block:"start" });
-                      }, 50);
+                      // Immediately scroll to top of table
+                      document.getElementById("students-table")?.scrollIntoView({ behavior:"smooth", block:"start" });
                     }}
                     placeholder="Name or phone number…"
                     className="w-full pl-8 pr-3 py-2 rounded-xl border text-sm bg-white"

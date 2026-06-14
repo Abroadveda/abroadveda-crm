@@ -339,7 +339,7 @@ export default function App() {
   const doAddTeam    = async (m)     => { try { const r=await createTeamMember(m); setTeam(p=>[...p,r]); setShowAddTeam(false); notify("Member added"); } catch { notify("Could not add member"); } };
   const doUpdateTeam = async (id,patch)=> { try { const r=await updateTeamMember(id,patch); setTeam(p=>p.map(t=>t.id===id?{...t,...r}:t)); notify("Saved"); } catch { notify("Could not update"); } };
   const doDeleteTeam = async (id)    => { try { await deleteTeamMember(id); setTeam(p=>p.filter(t=>t.id!==id)); } catch { notify("Could not delete"); } };
-  const doAddSlot    = async (f)     => { try { const s=await createSlot(f); setSlots(p=>[...p,s]); setShowAddSlot(false); notify("Slot added"); } catch { notify("Could not add slot"); } };
+  const doAddSlot    = async (f)     => { try { const s=await createSlot(f); setSlots(p=>[...p,s]); setShowAddSlot(false); notify("Slot added"); return s; } catch { notify("Could not add slot"); return null; } };
   const doBookSlot = async (slotId, studentId) => {
     try {
       // Get counsellor_id from existing slot state BEFORE booking (more reliable)
@@ -1275,8 +1275,15 @@ function TodaySchedule({ slots, students, team, isAdmin, isBDE, onTabChange }) {
 function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUser, memberName, onAddSlot, onBookSlot, onFreeSlot, onDeleteSlot, showAddSlot, setShowAddSlot }) {
   const [selDate, setSelDate]   = useState(todayStr());
   const [selCounsellor, setSelCounsellor] = useState("all");
-  const [bookingSlot, setBookingSlot] = useState(null); // { slotId, time, label, counsellorName }
+  const [bookingSlot, setBookingSlot] = useState(null);
   const [bookStudentId, setBookStudentId] = useState("");
+  // BDE quick-book flow state
+  const [bdeStep, setBdeStep] = useState(1); // 1=pick counsellor+date, 2=pick slot, 3=confirm
+  const [bdeCounsellor, setBdeCounsellor] = useState("");
+  const [bdeDate, setBdeDate] = useState(todayStr());
+  const [bdePickedSlot, setBdePickedSlot] = useState(null);
+  const [bdeStudent, setBdeStudent] = useState("");
+  const [bdeBooking, setBdeBooking] = useState(false);
   const counsellors = team.filter(t=>hasRole(t,"Counsellor"));
 
   const studentName = id => students.find(s=>s.id===id)?.name||"";
@@ -1348,25 +1355,180 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-xl font-extrabold flex items-center gap-2"><Calendar size={20} style={{color:T.blue}}/> {isBDE?"Counsellor Schedule — Book a Slot":"Counselling Schedule"}</h1>
-        <p className="text-sm text-slate-500 mt-0.5">Each slot is <strong>1 hour</strong> · 11 AM to 7 PM · Green = free · Orange = available · Red = booked</p>
+        <h1 className="text-xl font-extrabold flex items-center gap-2"><Calendar size={20} style={{color:T.blue}}/> {isBDE?"Book Counselling Session":"Counselling Schedule"}</h1>
+        <p className="text-sm text-slate-500 mt-0.5">{isBDE?"Pick a counsellor, choose a free slot, assign your student — no admin approval needed":"Each slot is 1 hour · 11 AM to 6 PM · Green = free · Blue = available · Red = booked"}</p>
       </div>
 
-      {/* BDE info */}
+      {/* ══ BDE: STREAMLINED 3-STEP BOOKING ══ */}
       {isBDE && (
-        <div className="card p-4 border-l-4" style={{borderLeftColor:T.teal}}>
-          <p className="font-bold text-sm flex items-center gap-2"><PhoneCall size={14} style={{color:T.teal}}/> When you call a student and they agree to counselling:</p>
-          <ol className="text-xs text-slate-600 mt-2 space-y-1 list-decimal list-inside">
-            <li>Pick the date and counsellor below</li>
-            <li>Find a <span className="font-bold text-green-700">Free</span> or <span className="font-bold text-blue-600">Available</span> slot</li>
-            <li>Click <strong>Book</strong> — select the student — confirm</li>
-            <li>The slot shows as <span className="font-bold text-red-600">Booked</span> with the student name</li>
-          </ol>
+        <div className="card p-5">
+          <h2 className="font-bold text-sm mb-4 flex items-center gap-2">
+            <PhoneCall size={15} style={{color:T.teal}}/> Book counselling for your student
+          </h2>
+
+          {/* Step indicators */}
+          <div className="flex items-center gap-2 mb-5">
+            {[["1","Choose counsellor & date"],["2","Pick a free slot"],["3","Confirm booking"]].map(([num,label],idx)=>(
+              <React.Fragment key={num}>
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-extrabold text-white shrink-0"
+                    style={{background:bdeStep>idx+1?T.ok:bdeStep===idx+1?T.teal:"#CBD5E1"}}>
+                    {bdeStep>idx+1?"✓":num}
+                  </div>
+                  <span className={`text-xs font-semibold hidden sm:block ${bdeStep===idx+1?"text-slate-800":"text-slate-400"}`}>{label}</span>
+                </div>
+                {idx<2&&<div className="flex-1 h-0.5 rounded-full" style={{background:bdeStep>idx+1?T.ok:"#E5EAF3"}}/>}
+              </React.Fragment>
+            ))}
+          </div>
+
+          {/* STEP 1: Choose counsellor and date */}
+          {bdeStep===1&&(
+            <div className="space-y-4">
+              <div className="grid sm:grid-cols-2 gap-4">
+                <label className="block text-xs font-semibold text-slate-500">Select counsellor *
+                  <select value={bdeCounsellor} onChange={e=>setBdeCounsellor(e.target.value)} style={inp}>
+                    <option value="">-- Choose counsellor --</option>
+                    {counsellors.map(c=><option key={c.id} value={c.id}>{c.name}{c.country&&c.country!=="—"?` · ${c.country}`:""}</option>)}
+                  </select>
+                </label>
+                <label className="block text-xs font-semibold text-slate-500">Select date *
+                  <input type="date" value={bdeDate} onChange={e=>setBdeDate(e.target.value)} min={todayStr()} style={inp}/>
+                </label>
+              </div>
+              {counsellors.length===0&&<p className="text-sm text-orange-600 font-semibold">No counsellors in team yet. Ask admin to add counsellors first.</p>}
+              <button
+                disabled={!bdeCounsellor||!bdeDate}
+                onClick={()=>setBdeStep(2)}
+                className="w-full py-3 rounded-xl text-white font-bold text-sm disabled:opacity-40"
+                style={{background:T.teal}}>
+                See available slots →
+              </button>
+            </div>
+          )}
+
+          {/* STEP 2: Show slots for chosen counsellor */}
+          {bdeStep===2&&(()=>{
+            const cName=counsellors.find(c=>c.id===bdeCounsellor)?.name||"";
+            const slotsForDay=slots.filter(s=>s.counsellor_id===bdeCounsellor&&s.slot_date===bdeDate);
+            return(
+              <div className="space-y-4">
+                <div className="flex items-center gap-3 p-3 rounded-xl" style={{background:T.teal+"12"}}>
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-white text-sm" style={{background:T.blue}}>{cName[0]}</div>
+                  <div><div className="font-bold text-sm">{cName}</div><div className="text-xs text-slate-500">{fmtDate(bdeDate)}</div></div>
+                  <button onClick={()=>setBdeStep(1)} className="ml-auto text-xs font-semibold text-slate-400 hover:text-slate-600">← Change</button>
+                </div>
+
+                <p className="text-xs font-semibold text-slate-500">Available time slots — tap to select:</p>
+                <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                  {SLOT_TIMES.map(time=>{
+                    const existing=slotsForDay.find(s=>s.slot_time===time);
+                    const isBooked=existing?.status==="booked";
+                    const isAvail=existing?.status==="available";
+                    const isFree=!existing;
+                    const isPicked=bdePickedSlot?.time===time;
+                    if(isBooked){
+                      const bookedSt=students.find(s=>s.id===existing.booked_by);
+                      return(
+                        <div key={time} className="rounded-xl border-2 p-2.5 text-center" style={{borderColor:"#FECACA",background:"#FEF2F2"}}>
+                          <div className="text-sm font-extrabold text-red-500">{time}</div>
+                          <div className="text-[9px] font-bold text-red-400 mt-0.5">Booked</div>
+                          <div className="text-[9px] text-red-400 truncate mt-0.5">{bookedSt?.name||"Student"}</div>
+                        </div>
+                      );
+                    }
+                    return(
+                      <button key={time}
+                        onClick={()=>setBdePickedSlot({time,slotId:existing?.id||null,isNew:!existing})}
+                        className="rounded-xl border-2 p-2.5 text-center transition active:scale-95"
+                        style={{
+                          borderColor:isPicked?T.teal:isAvail?T.blue:"#22C55E",
+                          background:isPicked?T.teal+"22":isAvail?"#EFF6FF":"#F0FDF4",
+                          outline:isPicked?`2px solid ${T.teal}`:""
+                        }}>
+                        <div className="text-sm font-extrabold" style={{color:isPicked?T.teal:isAvail?T.blue:"#16A34A"}}>{time}</div>
+                        <div className="text-[9px] font-bold mt-0.5" style={{color:isPicked?T.teal:isAvail?T.blue:"#16A34A"}}>{isPicked?"✓ Selected":isAvail?"Available":"Free"}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {SLOT_TIMES.every(time=>{
+                  const ex=slotsForDay.find(s=>s.slot_time===time);
+                  return ex?.status==="booked";
+                })&&<p className="text-sm text-orange-600 font-semibold text-center py-2">All slots are booked for this date. Try another date.</p>}
+
+                <div className="flex gap-3">
+                  <button onClick={()=>{setBdeStep(1);setBdePickedSlot(null);}} className="flex-1 py-2.5 rounded-xl border font-semibold text-sm text-slate-600" style={{borderColor:T.line}}>← Back</button>
+                  <button
+                    disabled={!bdePickedSlot}
+                    onClick={()=>setBdeStep(3)}
+                    className="flex-1 py-2.5 rounded-xl text-white font-bold text-sm disabled:opacity-40"
+                    style={{background:T.teal}}>
+                    Next: Choose student →
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* STEP 3: Choose student and confirm */}
+          {bdeStep===3&&(()=>{
+            const cName=counsellors.find(c=>c.id===bdeCounsellor)?.name||"";
+            const myStudents=students.filter(s=>s.bde_id===currentUser.id||s.assigned_to===currentUser.id);
+            return(
+              <div className="space-y-4">
+                {/* Summary */}
+                <div className="p-4 rounded-xl space-y-2" style={{background:T.teal+"12"}}>
+                  <div className="flex items-center gap-2 text-sm font-semibold"><span className="text-slate-400">Counsellor:</span><span style={{color:T.teal}}>{cName}</span></div>
+                  <div className="flex items-center gap-2 text-sm font-semibold"><span className="text-slate-400">Date:</span><span style={{color:T.teal}}>{fmtDate(bdeDate)}</span></div>
+                  <div className="flex items-center gap-2 text-sm font-semibold"><span className="text-slate-400">Time:</span><span style={{color:T.teal}}>{bdePickedSlot?.time} — 1 hour session</span></div>
+                </div>
+
+                <label className="block text-xs font-semibold text-slate-500">Select your student *
+                  <select value={bdeStudent} onChange={e=>setBdeStudent(e.target.value)} style={inp}>
+                    <option value="">-- Select student to book --</option>
+                    {myStudents.map(s=>(
+                      <option key={s.id} value={s.id}>{s.name} · {s.phone} · {s.country}</option>
+                    ))}
+                  </select>
+                  {myStudents.length===0&&<p className="text-[11px] text-orange-600 mt-1">No leads found. Add students first from the Students tab.</p>}
+                </label>
+
+                <div className="flex gap-3">
+                  <button onClick={()=>{setBdeStep(2);setBdeStudent("");}} className="flex-1 py-2.5 rounded-xl border font-semibold text-sm text-slate-600" style={{borderColor:T.line}}>← Back</button>
+                  <button
+                    disabled={!bdeStudent||bdeBooking}
+                    onClick={async()=>{
+                      if(!bdeStudent||!bdePickedSlot||!bdeCounsellor)return;
+                      setBdeBooking(true);
+                      try {
+                        let slotId=bdePickedSlot.slotId;
+                        if(!slotId){
+                          // create the slot first
+                          const newSlot=await onAddSlot({counsellor_id:bdeCounsellor,slot_date:bdeDate,slot_time:bdePickedSlot.time,status:"available"});
+                          if(newSlot?.id)slotId=newSlot.id;
+                          else{await new Promise(r=>setTimeout(r,800));const found=slots.find(s=>s.counsellor_id===bdeCounsellor&&s.slot_date===bdeDate&&s.slot_time===bdePickedSlot.time);if(found)slotId=found.id;}
+                        }
+                        if(slotId)await onBookSlot(slotId,bdeStudent);
+                        // reset
+                        setBdeStep(1);setBdeCounsellor("");setBdeDate(todayStr());setBdePickedSlot(null);setBdeStudent("");
+                      }catch(e){console.error(e);}
+                      finally{setBdeBooking(false);}
+                    }}
+                    className="flex-1 py-2.5 rounded-xl text-white font-bold text-sm disabled:opacity-40 flex items-center justify-center gap-2"
+                    style={{background:T.teal}}>
+                    {bdeBooking?<><Loader2 size={16} className="animate-spin"/> Booking…</>:"✓ Confirm booking"}
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
-      {/* Controls */}
-      <div className="flex flex-wrap gap-3 items-center">
+      {/* Controls — Admin and Counsellor only, BDE uses the booking flow above */}
+      {!isBDE && <div className="flex flex-wrap gap-3 items-center">
         <div className="flex items-center gap-2">
           <label className="text-xs font-bold text-slate-500">Date</label>
           <input type="date" value={selDate} onChange={e=>setSelDate(e.target.value)} min={todayStr()}
@@ -1382,24 +1544,24 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
         {(isAdmin||isCounsel) && (
           <button onClick={()=>setShowAddSlot(true)} className="flex items-center gap-2 px-3 py-2 rounded-xl text-white text-sm font-semibold ml-auto" style={{background:T.blue}}><Plus size={14}/> Mark available</button>
         )}
-      </div>
+      </div>}
 
-      {/* Legend */}
-      <div className="flex flex-wrap gap-3 text-xs font-semibold">
+      {/* Legend — admin/counsellor only */}
+      {!isBDE && <div className="flex flex-wrap gap-3 text-xs font-semibold">
         <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-green-500"/><span className="text-green-700">Free (no booking)</span></span>
         <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-blue-500"/><span className="text-blue-700">Available (can book)</span></span>
         <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-full bg-red-500"/><span className="text-red-700">Booked</span></span>
-      </div>
+      </div>}
 
-      {/* Schedule grid per counsellor */}
-      {displayCounsellors.length===0 && (
+      {/* Schedule grid per counsellor — admin/counsellor only */}
+      {!isBDE && displayCounsellors.length===0 && (
         <div className="card p-8 text-center text-slate-400">
           <Users size={32} className="mx-auto mb-2 text-slate-300"/>
           <p>No counsellors in the team yet. Admin can add them in the Team tab.</p>
         </div>
       )}
 
-      {displayCounsellors.map(c=>(
+      {!isBDE && displayCounsellors.map(c=>(
         <div key={c.id} className="card p-4">
           <div className="flex items-center gap-3 mb-4">
             <div className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-white text-sm" style={{background:T.blue}}>{c.name[0]}</div>

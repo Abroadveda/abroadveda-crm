@@ -363,7 +363,17 @@ export default function App() {
   const doAddTeam    = async (m)     => { try { const r=await createTeamMember(m); setTeam(p=>[...p,r]); setShowAddTeam(false); notify("Member added"); } catch { notify("Could not add member"); } };
   const doUpdateTeam = async (id,patch)=> { try { const r=await updateTeamMember(id,patch); setTeam(p=>p.map(t=>t.id===id?{...t,...r}:t)); notify("Saved"); } catch { notify("Could not update"); } };
   const doDeleteTeam = async (id)    => { try { await deleteTeamMember(id); setTeam(p=>p.filter(t=>t.id!==id)); } catch { notify("Could not delete"); } };
-  const doAddSlot    = async (f)     => { try { const s=await createSlot(f); setSlots(p=>[...p,s]); setShowAddSlot(false); notify("Slot added"); return s; } catch { notify("Could not add slot"); return null; } };
+  const doAddSlot = async (f, silent=false) => {
+    try {
+      const s=await createSlot(f);
+      setSlots(p=>[...p,s]);
+      if(!silent) { setShowAddSlot(false); notify("Slot added"); }
+      return s;
+    } catch(e) {
+      notify("Could not add slot: "+e.message);
+      return null;
+    }
+  };
   const doBookSlot = async (slotId, studentId) => {
     try {
       const existingSlot = slots.find(x=>x.id===slotId);
@@ -1527,16 +1537,19 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
                       setBdeBooking(true);
                       try {
                         let slotId=bdePickedSlot.slotId;
+                        // Step 1: Create slot if it doesn't exist yet
                         if(!slotId){
-                          // create the slot first
-                          const newSlot=await onAddSlot({counsellor_id:bdeCounsellor,slot_date:bdeDate,slot_time:bdePickedSlot.time,status:"available"});
-                          if(newSlot?.id)slotId=newSlot.id;
-                          else{await new Promise(r=>setTimeout(r,800));const found=slots.find(s=>s.counsellor_id===bdeCounsellor&&s.slot_date===bdeDate&&s.slot_time===bdePickedSlot.time);if(found)slotId=found.id;}
+                          const newSlot=await onAddSlot({counsellor_id:bdeCounsellor,slot_date:bdeDate,slot_time:bdePickedSlot.time,status:"available"}, true);
+                          if(newSlot?.id) slotId=newSlot.id;
                         }
-                        if(slotId)await onBookSlot(slotId,bdeStudent);
-                        // reset
+                        // Step 2: Book the slot (links student to slot)
+                        if(slotId) await onBookSlot(slotId, bdeStudent);
+                        // Step 3: Reset flow
                         setBdeStep(1);setBdeCounsellor("");setBdeDate(todayStr());setBdePickedSlot(null);setBdeStudent("");
-                      }catch(e){console.error(e);}
+                      }catch(e){
+                        notify("Booking failed: "+e.message);
+                        console.error(e);
+                      }
                       finally{setBdeBooking(false);}
                     }}
                     className="flex-1 py-2.5 rounded-xl text-white font-bold text-sm disabled:opacity-40 flex items-center justify-center gap-2"

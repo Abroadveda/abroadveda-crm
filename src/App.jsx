@@ -146,7 +146,7 @@ export default function App() {
 
   const visibleStudents = useMemo(() => {
     if (!currentUser || isAdmin) return students;
-    if (isBDE) return students.filter(s => s.bde_id===currentUser.id || (s.assigned_to===currentUser.id && s.stage==="lead"));
+    if (isBDE) return students.filter(s => s.bde_id===currentUser.id);
     if (isCounsel) return students.filter(s => s.assigned_to===currentUser.id);
     if (isVisa) return students.filter(s => s.assigned_to===currentUser.id && ["visa","predep","departed"].includes(s.stage));
     return [];
@@ -155,48 +155,57 @@ export default function App() {
   const pendingAssignment = useMemo(() => students.filter(s => s.stage==="lead" && !s.bde_id && !s.assigned_to), [students]);
   const memberName = (id) => team.find(t => t.id===id)?.name || "";
 
-  const filtered = useMemo(() => visibleStudents.filter(s => {
-    const q=query.trim().toLowerCase();
-    if (q && !`${s.name} ${s.email} ${s.phone} ${s.country}`.toLowerCase().includes(q)) return false;
-    if (filterStage!=="all" && s.stage!==filterStage) return false;
-    if (filterCountry!=="all" && s.country!==filterCountry) return false;
-    if (filterQual!=="all" && s.qualification!==filterQual) return false;
-    // Call status filter — looks at last call log note
-    if (filterCall!=="all") {
-      const notes = s.notes||[];
-      const lastCall = [...notes].reverse().find(n=>n.text?.startsWith("📞"));
-      const lastOutcome = lastCall ? lastCall.text.split("\n")[0].replace("📞 CALL — ","") : "never";
-      const today = new Date().toISOString().slice(0,10);
-      if (filterCall==="never" && lastCall) return false;
-      if (filterCall==="never" && !lastCall) return true;
-      if (filterCall==="not_reachable" && !lastOutcome.includes("Not reachable")) return false;
-      if (filterCall==="callback" && !lastOutcome.includes("callback")) return false;
-      if (filterCall==="busy" && !lastOutcome.includes("Busy")) return false;
-      if (filterCall==="interested" && !lastOutcome.includes("Interested")) return false;
-      if (filterCall==="not_interested" && !lastOutcome.includes("Not interested")) return false;
-      if (filterCall==="booked" && !lastOutcome.includes("Counselling")) return false;
-      if (filterCall==="whatsapp" && !lastOutcome.includes("WhatsApp")) return false;
-      if (filterCall==="overdue_callback") {
-        // Has a callback date in past
-        const cbLine = lastCall?.text?.split("\n").find(l=>l.startsWith("Callback:"));
-        if (!cbLine) return false;
-        const cbDate = cbLine.replace("Callback:","").trim().slice(0,10);
-        if (!cbDate || cbDate >= today) return false;
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const digits = q.replace(/[^0-9]/g, "");
+    return visibleStudents.filter(s => {
+      // Fast text search — name/email/country or phone digits
+      if (q) {
+        const textMatch = `${s.name} ${s.email} ${s.country}`.toLowerCase().includes(q);
+        const phoneMatch = digits.length >= 3 && (s.phone||"").replace(/[^0-9]/g,"").includes(digits);
+        if (!textMatch && !phoneMatch) return false;
       }
-      if (filterCall==="callback_today") {
-        const cbLine = lastCall?.text?.split("\n").find(l=>l.startsWith("Callback:"));
-        if (!cbLine) return false;
-        const cbDate = cbLine.replace("Callback:","").trim().slice(0,10);
-        if (cbDate !== today) return false;
+      if (filterStage!=="all" && s.stage!==filterStage) return false;
+      if (filterCountry!=="all" && s.country!==filterCountry) return false;
+      if (filterQual!=="all" && s.qualification!==filterQual) return false;
+      if (filterCall!=="all") {
+        const notes = s.notes||[];
+        const lastCall = [...notes].reverse().find(n=>n.text?.startsWith("📞"));
+        const lastOutcome = lastCall ? lastCall.text.split("\n")[0].replace("📞 CALL — ","") : "never";
+        const today = new Date().toISOString().slice(0,10);
+        if (filterCall==="never" && lastCall) return false;
+        if (filterCall==="never" && !lastCall) return true;
+        if (filterCall==="not_reachable" && !lastOutcome.includes("Not reachable")) return false;
+        if (filterCall==="callback" && !lastOutcome.includes("callback")) return false;
+        if (filterCall==="busy" && !lastOutcome.includes("Busy")) return false;
+        if (filterCall==="interested" && !lastOutcome.includes("Interested")) return false;
+        if (filterCall==="not_interested" && !lastOutcome.includes("Not interested")) return false;
+        if (filterCall==="booked" && !lastOutcome.includes("Counselling")) return false;
+        if (filterCall==="whatsapp" && !lastOutcome.includes("WhatsApp")) return false;
+        if (filterCall==="overdue_callback") {
+          const cbLine = lastCall?.text?.split("\n").find(l=>l.startsWith("Callback:"));
+          if (!cbLine) return false;
+          const cbDate = cbLine.replace("Callback:","").trim().slice(0,10);
+          if (!cbDate || cbDate >= today) return false;
+        }
+        if (filterCall==="callback_today") {
+          const cbLine = lastCall?.text?.split("\n").find(l=>l.startsWith("Callback:"));
+          if (!cbLine) return false;
+          const cbDate = cbLine.replace("Callback:","").trim().slice(0,10);
+          if (cbDate !== today) return false;
+        }
       }
-    }
-    return true;
-  }), [visibleStudents, query, filterStage, filterCountry, filterQual, filterCall]);
+      return true;
+    });
+  }, [visibleStudents, query, filterStage, filterCountry, filterQual, filterCall]);
 
   const searchHits = useMemo(() => {
-    const q=globalQ.trim().toLowerCase();
+    const q=globalQ.trim().toLowerCase().replace(/\s+/g,"");
     if (!q) return [];
-    return visibleStudents.filter(s => `${s.name} ${s.email} ${s.phone}`.toLowerCase().includes(q)).slice(0,6);
+    return visibleStudents.filter(s => {
+      const hay=`${s.name} ${s.email} ${s.phone} ${(s.phone||"").replace(/[^0-9]/g,"")}`.toLowerCase().replace(/\s+/g,"");
+      return hay.includes(q);
+    }).slice(0,6);
   }, [visibleStudents, globalQ]);
 
   const stats = useMemo(() => ({
@@ -342,20 +351,19 @@ export default function App() {
   const doAddSlot    = async (f)     => { try { const s=await createSlot(f); setSlots(p=>[...p,s]); setShowAddSlot(false); notify("Slot added"); return s; } catch { notify("Could not add slot"); return null; } };
   const doBookSlot = async (slotId, studentId) => {
     try {
-      // Get counsellor_id from existing slot state BEFORE booking (more reliable)
       const existingSlot = slots.find(x=>x.id===slotId);
       const bookedSlot = await bookSlot(slotId, studentId);
       setSlots(p=>p.map(x=>x.id===slotId?bookedSlot:x));
-      // Use counsellor_id from existing slot or from DB response
       const counsellorId = existingSlot?.counsellor_id || bookedSlot?.counsellor_id;
       if (counsellorId && studentId) {
         const slotDate = existingSlot?.slot_date || bookedSlot?.slot_date || "";
         const slotTime = existingSlot?.slot_time || bookedSlot?.slot_time || "";
         const cName = memberName(counsellorId) || "counsellor";
-        // Auto-assign student to counsellor + advance to counsel stage
+        // Assign counsellor + move to counsel stage — BDE still sees student via bde_id
         await updStudent(studentId, { assigned_to: counsellorId, stage: "counsel" });
-        await doAddNote(studentId, `Counselling booked with ${cName} on ${slotDate} at ${slotTime}`);
-        notify(`Slot booked ✓ — ${studentId===currentUser?.id?"":team.find(t=>t.id===studentId)?.name||"Student"} assigned to ${cName}`);
+        await doAddNote(studentId, `📅 Counselling booked by BDE — ${cName} on ${slotDate} at ${slotTime}. No admin approval needed.`);
+        const stName = students.find(s=>s.id===studentId)?.name||"Student";
+        notify(`Booked ✓ — ${stName} → ${cName} on ${slotDate} at ${slotTime}`);
       } else {
         notify("Slot booked ✓");
       }
@@ -495,7 +503,7 @@ export default function App() {
           <div className="md:hidden w-8 h-8 rounded-lg flex items-center justify-center font-extrabold text-white text-sm" style={{background:"linear-gradient(135deg,#0d6efd,#F59E0B)"}}>AV</div>
           <div className="relative flex-1 max-w-lg">
             <Search size={14} className="absolute left-3.5 top-3 text-slate-400"/>
-            <input value={globalQ} onChange={e=>setGlobalQ(e.target.value)} placeholder="Search student — name, phone, email…" className="w-full pl-9 pr-8 py-2.5 rounded-xl border text-sm bg-white" style={{borderColor:T.line}}/>
+            <input value={globalQ} onChange={e=>setGlobalQ(e.target.value)} placeholder="Search by name or phone number…" className="w-full pl-9 pr-8 py-2.5 rounded-xl border text-sm bg-white" style={{borderColor:T.line}}/>
             {globalQ && <button onClick={()=>setGlobalQ("")} className="absolute right-3 top-3 text-slate-400"><X size={13}/></button>}
             {searchHits.length>0 && (
               <div className="absolute mt-1.5 w-full card overflow-hidden z-50">
@@ -661,7 +669,7 @@ export default function App() {
               <div className="flex flex-wrap gap-2">
                 <div className="relative flex-1 min-w-[160px] max-w-xs">
                   <Search size={13} className="absolute left-3 top-2.5 text-slate-400"/>
-                  <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Filter…" className="w-full pl-8 pr-3 py-2 rounded-xl border text-sm bg-white" style={{borderColor:T.line}}/>
+                  <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Name or phone number…" className="w-full pl-8 pr-3 py-2 rounded-xl border text-sm bg-white" style={{borderColor:T.line}}/>
                 </div>
                 <select value={filterQual} onChange={e=>setFilterQual(e.target.value)} className="py-2 px-2 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:T.line}}><option value="all">All quals</option>{QUALS.map(q=><option key={q.id} value={q.id}>{q.id}</option>)}</select>
                 <select value={filterStage} onChange={e=>setFilterStage(e.target.value)} className="py-2 px-2 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:T.line}}><option value="all">All stages</option>{STAGES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select>

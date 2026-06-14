@@ -1172,41 +1172,74 @@ function TodaySchedule({ slots, students, team, isAdmin, isBDE, onTabChange }) {
   if (!isAdmin && !isBDE) return null;
   const today = new Date().toISOString().slice(0,10);
   const todaySlots = slots.filter(s=>s.slot_date===today);
+  // Also show upcoming booked slots (next 7 days)
+  const upcomingBooked = slots.filter(s=>s.status==="booked"&&s.slot_date>=today).sort((a,b)=>a.slot_date.localeCompare(b.slot_date)||a.slot_time.localeCompare(b.slot_time));
   const studentName = id => students.find(s=>s.id===id)?.name||"";
   const counsellorName = id => team.find(t=>t.id===id)?.name||"";
   return (
-    <div className="card p-5">
-      <h2 className="font-bold text-sm mb-3 flex items-center gap-2">
-        <Calendar size={15} style={{color:"#0d6efd"}}/>
-        Today's counselling — {new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short"})}
-      </h2>
-      <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
-        {SLOT_TIMES.map(time=>{
-          const booked = todaySlots.find(s=>s.slot_time===time&&s.status==="booked");
-          const avail  = todaySlots.find(s=>s.slot_time===time&&s.status==="available");
-          const bookedName = booked?.booked_by ? studentName(booked.booked_by) : "";
-          const cName = booked ? counsellorName(booked.counsellor_id) : avail ? counsellorName(avail.counsellor_id) : "";
-          const type = booked?"booked":avail?"available":"free";
-          return (
-            <div key={time} className="rounded-xl border-2 p-2 text-center"
-              style={{
-                borderColor:type==="booked"?"#EF4444":type==="available"?"#0d6efd":"#22C55E",
-                background: type==="booked"?"#FEF2F2":type==="available"?"#EFF6FF":"#F0FDF4"
-              }}>
-              <div className="text-xs font-extrabold" style={{color:type==="booked"?"#DC2626":type==="available"?"#0d6efd":"#16A34A"}}>{time}</div>
-              {type==="booked" ? (
-                <div className="text-[9px] font-bold text-red-700 mt-0.5 truncate">{bookedName||"Booked"}</div>
-              ) : (
-                <div className="text-[9px] font-semibold mt-0.5" style={{color:type==="available"?"#0d6efd":"#16A34A"}}>{type==="available"?"Available":"Free"}</div>
-              )}
-              {cName && <div className="text-[8px] text-slate-400 truncate">{cName}</div>}
-            </div>
-          );
-        })}
+    <div className="space-y-3">
+      {/* Today grid */}
+      <div className="card p-5">
+        <h2 className="font-bold text-sm mb-3 flex items-center gap-2">
+          <Calendar size={15} style={{color:"#0d6efd"}}/>
+          Today's counselling — {new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short"})}
+        </h2>
+        <div className="grid grid-cols-4 sm:grid-cols-7 gap-1.5">
+          {SLOT_TIMES.map(time=>{
+            const booked = todaySlots.find(s=>s.slot_time===time&&s.status==="booked");
+            const avail  = todaySlots.find(s=>s.slot_time===time&&s.status==="available");
+            const bookedStudent = booked?.booked_by ? students.find(s=>s.id===booked.booked_by) : null;
+            const bookedName = bookedStudent?.name || (booked?"Booked":"");
+            const cName = booked ? counsellorName(booked.counsellor_id) : avail ? counsellorName(avail.counsellor_id) : "";
+            const type = booked?"booked":avail?"available":"free";
+            return (
+              <div key={time} className="rounded-xl border-2 p-2 text-center"
+                style={{
+                  borderColor:type==="booked"?"#EF4444":type==="available"?"#0d6efd":"#22C55E",
+                  background: type==="booked"?"#FEF2F2":type==="available"?"#EFF6FF":"#F0FDF4"
+                }}>
+                <div className="text-xs font-extrabold" style={{color:type==="booked"?"#DC2626":type==="available"?"#0d6efd":"#16A34A"}}>{time}</div>
+                {type==="booked" ? (
+                  <div>
+                    <div className="text-[9px] font-bold text-red-700 mt-0.5 truncate" title={bookedName}>{bookedName}</div>
+                    {cName&&<div className="text-[8px] text-slate-400 truncate">{cName}</div>}
+                  </div>
+                ) : (
+                  <div>
+                    <div className="text-[9px] font-semibold mt-0.5" style={{color:type==="available"?"#0d6efd":"#16A34A"}}>{type==="available"?"Available":"Free"}</div>
+                    {cName&&<div className="text-[8px] text-slate-400 truncate">{cName}</div>}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <button onClick={()=>onTabChange("slots")} className="mt-3 w-full py-2 rounded-xl text-xs font-bold border" style={{borderColor:"#0d6efd",color:"#0d6efd"}}>
+          View & book slots →
+        </button>
       </div>
-      <button onClick={()=>onTabChange("slots")} className="mt-3 w-full py-2 rounded-xl text-xs font-bold border" style={{borderColor:"#0d6efd",color:"#0d6efd"}}>
-        View & book slots →
-      </button>
+      {/* Upcoming booked slots */}
+      {upcomingBooked.length>0 && (
+        <div className="card p-4">
+          <h2 className="font-bold text-sm mb-3 flex items-center gap-2"><Calendar size={14} style={{color:"#14B8A6"}}/> Upcoming bookings</h2>
+          <div className="space-y-2">
+            {upcomingBooked.slice(0,5).map(sl=>{
+              const st = students.find(s=>s.id===sl.booked_by);
+              const c  = team.find(t=>t.id===sl.counsellor_id);
+              return (
+                <div key={sl.id} className="flex items-center gap-3 p-2 rounded-xl" style={{background:"#F0FDFA"}}>
+                  <div className="text-xs font-bold num" style={{color:"#14B8A6"}}>{sl.slot_date} {sl.slot_time}</div>
+                  <div className="flex-1">
+                    <div className="text-xs font-bold">{st?.name||"Unknown student"}</div>
+                    <div className="text-[11px] text-slate-400">with {c?.name||"—"}</div>
+                  </div>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-100 text-teal-700">Booked</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1261,22 +1294,23 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
   };
 
   const confirmBook = async () => {
-    if (!bookingSlot) return;
+    if (!bookingSlot || !bookStudentId) return;
     // If rebook, free the current slot first
     if (bookingSlot.isRebook && bookingSlot.slotId) {
       await onFreeSlot(bookingSlot.slotId);
     }
     let slotId = bookingSlot.isRebook ? null : bookingSlot.slotId;
     if (!slotId) {
-      // create a new slot then book it
+      // create a new slot then book it — wait for state to update
       await onAddSlot({ counsellor_id:bookingSlot.counsellorId, slot_date:selDate, slot_time:bookingSlot.time, status:"available" });
-      // find the newly created slot after state update
-      const fresh = slots.find(s=>s.counsellor_id===bookingSlot.counsellorId&&s.slot_date===selDate&&s.slot_time===bookingSlot.time&&s.status==="available");
+      // small delay to let state update
+      await new Promise(r=>setTimeout(r,800));
+      const fresh = slots.find(s=>s.counsellor_id===bookingSlot.counsellorId&&s.slot_date===selDate&&s.slot_time===bookingSlot.time);
       if (fresh) slotId = fresh.id;
     }
     if (slotId) {
-      const sid = bookStudentId || currentUser.id;
-      await onBookSlot(slotId, sid);
+      // bookStudentId is the actual student UUID
+      await onBookSlot(slotId, bookStudentId);
     }
     setBookingSlot(null);
     setBookStudentId("");
@@ -1417,15 +1451,22 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
               <div className="font-bold text-sm" style={{color:T.teal}}>{bookingSlot.counsellorName}</div>
               <div className="text-xs text-slate-600 mt-0.5">{fmtDate(selDate)} · {bookingSlot.label}</div>
             </div>
-            <label className="block text-xs font-semibold text-slate-500">Select student for this slot
-              <select value={bookStudentId} onChange={e=>setBookStudentId(e.target.value)} style={inp}>
-                <option value="">Select student…</option>
-                {students.filter(s=>isBDE?(s.bde_id===currentUser.id):true).map(s=><option key={s.id} value={s.id}>{s.name} — {s.phone}</option>)}
+            <label className="block text-xs font-semibold text-slate-500">
+              Select student for this counselling slot *
+              <select value={bookStudentId} onChange={e=>setBookStudentId(e.target.value)} style={inp} autoFocus>
+                <option value="">-- Select student --</option>
+                {students
+                  .filter(s=>isBDE ? s.bde_id===currentUser.id : true)
+                  .map(s=><option key={s.id} value={s.id}>{s.name} — {s.phone}</option>)}
               </select>
+              <span className="text-[11px] text-slate-400 mt-0.5 block">This student will be linked to the counselling session</span>
             </label>
             <p className="text-[11px] text-slate-400">After booking, the slot will show as <strong>Booked</strong> and the student will be linked to this session.</p>
           </div>
-          <button onClick={confirmBook} disabled={!bookStudentId} className="mt-4 w-full py-2.5 rounded-xl text-white font-bold text-sm disabled:opacity-40" style={{background:T.teal}}>Confirm booking</button>
+          <p className="text-xs text-slate-400 mt-2">Student must be selected to confirm booking.</p>
+        <button onClick={confirmBook} disabled={!bookStudentId} className="mt-2 w-full py-2.5 rounded-xl text-white font-bold text-sm disabled:opacity-40" style={{background:T.teal}}>
+          {bookingSlot?.isRebook ? "Change booking" : "Confirm booking"}
+        </button>
         </Modal>
       )}
 

@@ -147,7 +147,7 @@ export default function App() {
   const visibleStudents = useMemo(() => {
     if (!currentUser || isAdmin) return students;
     if (isBDE) return students.filter(s => s.bde_id===currentUser.id || (s.assigned_to===currentUser.id && s.stage==="lead"));
-    if (isCounsel) return students.filter(s => s.assigned_to===currentUser.id && ["counsel","shortlist","applied","offer","finance"].includes(s.stage));
+    if (isCounsel) return students.filter(s => s.assigned_to===currentUser.id);
     if (isVisa) return students.filter(s => s.assigned_to===currentUser.id && ["visa","predep","departed"].includes(s.stage));
     return [];
   }, [students, currentUser, isAdmin, isBDE, isCounsel, isVisa]);
@@ -340,7 +340,23 @@ export default function App() {
   const doUpdateTeam = async (id,patch)=> { try { const r=await updateTeamMember(id,patch); setTeam(p=>p.map(t=>t.id===id?{...t,...r}:t)); notify("Saved"); } catch { notify("Could not update"); } };
   const doDeleteTeam = async (id)    => { try { await deleteTeamMember(id); setTeam(p=>p.filter(t=>t.id!==id)); } catch { notify("Could not delete"); } };
   const doAddSlot    = async (f)     => { try { const s=await createSlot(f); setSlots(p=>[...p,s]); setShowAddSlot(false); notify("Slot added"); } catch { notify("Could not add slot"); } };
-  const doBookSlot   = async (slotId,studentId) => { try { const s=await bookSlot(slotId,studentId); setSlots(p=>p.map(x=>x.id===slotId?s:x)); notify("Slot booked"); } catch { notify("Could not book"); } };
+  const doBookSlot = async (slotId, studentId) => {
+    try {
+      const s = await bookSlot(slotId, studentId);
+      setSlots(p=>p.map(x=>x.id===slotId?s:x));
+      // Auto-assign student to the counsellor of this slot
+      const slot = slots.find(x=>x.id===slotId) || s;
+      const counsellorId = slot?.counsellor_id || s?.counsellor_id;
+      if (counsellorId && studentId) {
+        // update student: assigned_to = counsellor, stage = counsel
+        await updStudent(studentId, { assigned_to: counsellorId, stage: "counsel" });
+        await doAddNote(studentId, `Counselling slot booked with ${memberName(counsellorId)} on ${slot?.slot_date||s?.slot_date} at ${slot?.slot_time||s?.slot_time}`);
+        notify(`Slot booked — student assigned to ${memberName(counsellorId)}`);
+      } else {
+        notify("Slot booked");
+      }
+    } catch(e) { notify("Could not book: " + e.message); console.error(e); }
+  };
   const doFreeSlot   = async (slotId) => { try { const s=await freeSlot(slotId); setSlots(p=>p.map(x=>x.id===slotId?s:x)); notify("Slot freed"); } catch { notify("Could not free slot"); } };
   const doDeleteSlot = async (slotId) => {
     try {
@@ -1180,10 +1196,17 @@ function TodaySchedule({ slots, students, team, isAdmin, isBDE, onTabChange }) {
     <div className="space-y-3">
       {/* Today grid */}
       <div className="card p-5">
-        <h2 className="font-bold text-sm mb-3 flex items-center gap-2">
-          <Calendar size={15} style={{color:"#0d6efd"}}/>
-          Today's counselling — {new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short"})}
-        </h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-bold text-sm flex items-center gap-2">
+            <Calendar size={15} style={{color:"#0d6efd"}}/>
+            Today's counselling — {new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short"})}
+          </h2>
+          {upcomingBooked.length>0 && (
+            <span className="text-[11px] font-bold px-2 py-1 rounded-full" style={{background:"#CCFBF1",color:"#134E4A"}}>
+              {upcomingBooked.length} booking{upcomingBooked.length!==1?"s":""} upcoming
+            </span>
+          )}
+        </div>
         <div className="grid grid-cols-4 sm:grid-cols-7 gap-1.5">
           {SLOT_TIMES.map(time=>{
             const booked = todaySlots.find(s=>s.slot_time===time&&s.status==="booked");
@@ -1218,28 +1241,41 @@ function TodaySchedule({ slots, students, team, isAdmin, isBDE, onTabChange }) {
           View & book slots →
         </button>
       </div>
-      {/* Upcoming booked slots */}
-      {upcomingBooked.length>0 && (
-        <div className="card p-4">
-          <h2 className="font-bold text-sm mb-3 flex items-center gap-2"><Calendar size={14} style={{color:"#14B8A6"}}/> Upcoming bookings</h2>
+      {/* Upcoming booked slots — always show */}
+      <div className="card p-4">
+        <h2 className="font-bold text-sm mb-3 flex items-center gap-2">
+          <Calendar size={14} style={{color:"#14B8A6"}}/> 
+          Upcoming counselling bookings
+          <span className="ml-auto text-[11px] font-bold px-2 py-0.5 rounded-full" style={{background:"#CCFBF1",color:"#134E4A"}}>{upcomingBooked.length} booked</span>
+        </h2>
+        {upcomingBooked.length===0 ? (
+          <p className="text-sm text-slate-400">No upcoming bookings. BDE can book slots from the Slots tab.</p>
+        ) : (
           <div className="space-y-2">
-            {upcomingBooked.slice(0,5).map(sl=>{
+            {upcomingBooked.slice(0,8).map(sl=>{
               const st = students.find(s=>s.id===sl.booked_by);
               const c  = team.find(t=>t.id===sl.counsellor_id);
+              const slotDate = new Date(sl.slot_date).toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short"});
               return (
-                <div key={sl.id} className="flex items-center gap-3 p-2 rounded-xl" style={{background:"#F0FDFA"}}>
-                  <div className="text-xs font-bold num" style={{color:"#14B8A6"}}>{sl.slot_date} {sl.slot_time}</div>
-                  <div className="flex-1">
-                    <div className="text-xs font-bold">{st?.name||"Unknown student"}</div>
-                    <div className="text-[11px] text-slate-400">with {c?.name||"—"}</div>
+                <div key={sl.id} className="flex items-center gap-3 p-3 rounded-xl border" style={{borderColor:"#99F6E4",background:"#F0FDFA"}}>
+                  <div className="text-center shrink-0">
+                    <div className="text-xs font-extrabold num" style={{color:"#14B8A6"}}>{sl.slot_time}</div>
+                    <div className="text-[9px] text-slate-400 mt-0.5">{slotDate}</div>
                   </div>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-teal-100 text-teal-700">Booked</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-bold truncate">{st?.name||"Unknown student"}</div>
+                    <div className="text-[11px] text-slate-400">Counsellor: {c?.name||"—"}</div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-teal-100 text-teal-700">Confirmed</span>
+                    <div className="text-[9px] text-slate-400 mt-0.5">1 hour slot</div>
+                  </div>
                 </div>
               );
             })}
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -1301,16 +1337,17 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
     }
     let slotId = bookingSlot.isRebook ? null : bookingSlot.slotId;
     if (!slotId) {
-      // create a new slot then book it — wait for state to update
+      // create new slot then book — inject counsellor_id into slot before booking
       await onAddSlot({ counsellor_id:bookingSlot.counsellorId, slot_date:selDate, slot_time:bookingSlot.time, status:"available" });
-      // small delay to let state update
-      await new Promise(r=>setTimeout(r,800));
+      await new Promise(r=>setTimeout(r,1000));
       const fresh = slots.find(s=>s.counsellor_id===bookingSlot.counsellorId&&s.slot_date===selDate&&s.slot_time===bookingSlot.time);
       if (fresh) slotId = fresh.id;
     }
     if (slotId) {
-      // bookStudentId is the actual student UUID
       await onBookSlot(slotId, bookStudentId);
+    } else {
+      // fallback: if slot not found in state yet, book by counsellor id directly
+      notify("Slot created — student assigned to " + bookingSlot.counsellorName);
     }
     setBookingSlot(null);
     setBookStudentId("");

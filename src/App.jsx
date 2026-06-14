@@ -163,8 +163,8 @@ export default function App() {
     return visibleStudents.filter(s => {
       // Fast text search — name/email/country or phone digits
       if (q) {
-        const textMatch = `${s.name} ${s.email} ${s.country}`.toLowerCase().includes(q);
-        const phoneMatch = digits.length >= 3 && (s.phone||"").replace(/[^0-9]/g,"").includes(digits);
+        const textMatch = `${s.name} ${s.email||""} ${s.country||""}`.toLowerCase().includes(q);
+        const phoneMatch = digits.length >= 2 && (s.phone||"").replace(/[^0-9]/g,"").includes(digits);
         if (!textMatch && !phoneMatch) return false;
       }
       if (filterStage!=="all" && s.stage!==filterStage) return false;
@@ -708,7 +708,26 @@ export default function App() {
               <div className="flex flex-wrap gap-2">
                 <div className="relative flex-1 min-w-[160px] max-w-xs">
                   <Search size={13} className="absolute left-3 top-2.5 text-slate-400"/>
-                  <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Name or phone number…" className="w-full pl-8 pr-3 py-2 rounded-xl border text-sm bg-white" style={{borderColor:T.line}}/>
+                  <input
+                    value={query}
+                    onChange={e => {
+                      setQuery(e.target.value);
+                      // When typing a name/number, clear stage filter so all stages are searched
+                      if (e.target.value.trim()) setFilterStage("all");
+                      // Scroll table to top
+                      setTimeout(() => {
+                        document.getElementById("students-table")?.scrollIntoView({ behavior:"smooth", block:"start" });
+                      }, 50);
+                    }}
+                    placeholder="Name or phone number…"
+                    className="w-full pl-8 pr-3 py-2 rounded-xl border text-sm bg-white"
+                    style={{borderColor:T.line}}
+                  />
+                  {query && (
+                    <button onClick={()=>setQuery("")} className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600">
+                      <X size={14}/>
+                    </button>
+                  )}
                 </div>
                 <select value={filterQual} onChange={e=>setFilterQual(e.target.value)} className="py-2 px-2 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:T.line}}><option value="all">All quals</option>{QUALS.map(q=><option key={q.id} value={q.id}>{q.id}</option>)}</select>
                 <select value={filterStage} onChange={e=>setFilterStage(e.target.value)} className="py-2 px-2 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:T.line}}><option value="all">All stages</option>{STAGES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select>
@@ -746,7 +765,7 @@ export default function App() {
                 </div>
               )}
 
-              <div className="card overflow-x-auto">
+              <div id="students-table" className="card overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-[11px] uppercase tracking-wider text-slate-400 border-b" style={{borderColor:T.line}}>

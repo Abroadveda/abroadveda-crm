@@ -814,7 +814,10 @@ export default function App() {
                           </td>
                           <td className="p-3 text-xs" onClick={()=>setSelected(s.id)}>
                             {(() => {
-                              const lastCall = [...(s.notes||[])].reverse().find(n=>n.text?.startsWith("📞"));
+                              const notes = s.notes||[];
+                              const lastCall = [...notes].reverse().find(n=>n.text?.startsWith("📞"));
+                              // Also check for counselling booking note
+                              const bookingNote = [...notes].reverse().find(n=>n.text?.startsWith("📅 Counselling booked"));
                               const outcome = lastCall ? lastCall.text.split("\n")[0].replace("📞 CALL — ","") : null;
                               const callColor = !outcome ? "#94A3B8"
                                 : outcome.includes("Not reachable") ? "#DC2626"
@@ -834,13 +837,38 @@ export default function App() {
                                 : outcome.includes("Counselling") ? "Booked ✓"
                                 : outcome.includes("WhatsApp") ? "WhatsApp"
                                 : outcome?.slice(0,14)||"Called";
+
+                              // Extract slot date & time from booking note
+                              let slotDisplay = null;
+                              if (bookingNote) {
+                                // note format: "📅 Counselling booked — [name] on [date] at [time]"
+                                const onMatch = bookingNote.text.match(/on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2})/);
+                                if (onMatch) {
+                                  const d = new Date(onMatch[1]).toLocaleDateString("en-GB",{day:"numeric",month:"short"});
+                                  slotDisplay = `${d} · ${onMatch[2]}`;
+                                }
+                              }
+
                               return (
-                                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{background:callColor+"18",color:callColor}}>
-                                  {shortLabel}
-                                </span>
+                                <div>
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{background:callColor+"18",color:callColor}}>
+                                    {shortLabel}
+                                  </span>
+                                  {slotDisplay && (
+                                    <div className="flex items-center gap-1 mt-1">
+                                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg num" style={{background:"#CCFBF1",color:"#0D9488"}}>
+                                        📅 {slotDisplay}
+                                      </span>
+                                    </div>
+                                  )}
+                                  {!slotDisplay && s.follow_up && (
+                                    <div className={`text-[11px] mt-0.5 num ${isOverdue(s)?"font-bold text-red-600":"text-slate-400"}`}>
+                                      {isOverdue(s)?"⚠️ ":""}{s.follow_up}
+                                    </div>
+                                  )}
+                                </div>
                               );
                             })()}
-                            {s.follow_up && <div className={`text-[11px] mt-0.5 num ${isOverdue(s)?"font-bold text-red-600":"text-slate-400"}`}>{isOverdue(s)?"⚠️ ":""}{s.follow_up}</div>}
                           </td>
                           <td className="p-3" onClick={e=>e.stopPropagation()}>
                             <div className="flex gap-1">

@@ -314,9 +314,24 @@ export default function App() {
   const doAddStudent = async (form) => {
     try {
       const ff={...form};
-      if (isBDE) { ff.bde_id=currentUser.id; ff.assigned_to=currentUser.id; }
+      delete ff._bde_picked_counsellor;
+      delete ff.counsellor_id;
+      if (isBDE) {
+        ff.bde_id = currentUser.id;
+        ff.assigned_to = currentUser.id;
+        // If BDE picked a counsellor, assign directly and move to counsel stage
+        if (form.counsellor_id) {
+          ff.assigned_to = form.counsellor_id;
+          ff.stage = "counsel";
+        }
+      }
       const rec=await createStudent(ff);
       await Promise.all(DEFAULT_DOCS.map(n=>upsertDocument({student_id:rec.id,name:n,status:"Pending"})));
+      // Add note if counsellor was assigned
+      if (isBDE && form.counsellor_id) {
+        const cName = team.find(t=>t.id===form.counsellor_id)?.name||"counsellor";
+        await dbAddNote(rec.id, `✅ Counsellor assigned by BDE: ${cName}. Student moved to Counselling stage.`);
+      }
       const refreshed=await getStudents(); setStudents(refreshed);
       setShowAdd(false); notify("Lead saved");
     } catch(e) { notify("Could not save: "+e.message); }
@@ -2218,11 +2233,22 @@ function DocsTab({ s, docs, isAdmin, isCounsel, onCycleDoc, onAddDoc, onDeleteDo
 
 /* ════ ADD STUDENT MODAL ════ */
 function AddStudentModal({ team, isBDE, currentUser, onClose, onSave }) {
-  const [f,setF]=useState({name:"",phone:"",email:"",level:"PG",country:"UK",intake:"September",field:FIELDS[0],qualification:"Warm",assigned_to:isBDE?currentUser.id:"",stage:"lead"});
+  const counsellors = team.filter(t => (t.roles||[t.role]).includes("Counsellor") || t.role==="Counsellor");
+  const [f,setF]=useState({
+    name:"", phone:"", email:"", level:"PG", country:"UK", intake:"September",
+    field:FIELDS[0], qualification:"Warm",
+    counsellor_id: "", // BDE picks counsellor
+    assigned_to: isBDE ? currentUser.id : "",
+    stage:"lead"
+  });
   const set=k=>e=>setF(p=>({...p,[k]:e.target.value}));
   return (
     <Modal title={isBDE?"Add new lead":"New lead"} onClose={onClose}>
-      {isBDE && <div className="mb-3 p-3 rounded-xl text-xs font-semibold" style={{background:"#CCFBF1",color:"#134E4A"}}>Lead will be added under your name. Admin will assign a counsellor.</div>}
+      {isBDE && (
+        <div className="mb-3 p-3 rounded-xl text-xs font-semibold flex items-start gap-2" style={{background:"#CCFBF1",color:"#134E4A"}}>
+          <span>✓ Lead added under your name. Choose a counsellor below to assign directly — or leave blank and admin will assign later.</span>
+        </div>
+      )}
       <div className="grid sm:grid-cols-2 gap-3">
         <Field label="Full name *"><input value={f.name} onChange={set("name")} style={inp} placeholder="Student name" autoFocus/></Field>
         <Field label="Mobile *"><input value={f.phone} onChange={set("phone")} style={inp} placeholder="+91…" type="tel"/></Field>
@@ -2232,9 +2258,31 @@ function AddStudentModal({ team, isBDE, currentUser, onClose, onSave }) {
         <Field label="Intake"><select value={f.intake} onChange={set("intake")} style={inp}>{INTAKES.map(m=><option key={m}>{m}</option>)}</select></Field>
         <Field label="Field"><select value={f.field} onChange={set("field")} style={inp}>{FIELDS.map(x=><option key={x}>{x}</option>)}</select></Field>
         <Field label="Qualification"><select value={f.qualification} onChange={set("qualification")} style={inp}><option>Hot</option><option>Warm</option><option>Cold</option></select></Field>
-        {!isBDE && <Field label="Assign to"><select value={f.assigned_to} onChange={set("assigned_to")} style={inp}><option value="">Unassigned</option>{team.map(t=><option key={t.id} value={t.id}>{t.name} ({primaryRole(t)})</option>)}</select></Field>}
+        {/* BDE: pick counsellor directly */}
+        {isBDE && (
+          <Field label="Assign counsellor (optional)">
+            <select value={f.counsellor_id} onChange={set("counsellor_id")} style={inp}>
+              <option value="">Select counsellor…</option>
+              {counsellors.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </Field>
+        )}
+        {!isBDE && (
+          <Field label="Assign to">
+            <select value={f.assigned_to} onChange={set("assigned_to")} style={inp}>
+              <option value="">Unassigned</option>
+              {team.map(t=><option key={t.id} value={t.id}>{t.name} ({primaryRole(t)})</option>)}
+            </select>
+          </Field>
+        )}
       </div>
-      <button disabled={!f.name.trim()||!f.phone.trim()} onClick={()=>onSave(f)} className="mt-4 w-full py-2.5 rounded-xl text-white font-semibold text-sm disabled:opacity-40" style={{background:isBDE?T.teal:T.blue}}>Save lead</button>
+      <button
+        disabled={!f.name.trim()||!f.phone.trim()}
+        onClick={()=>onSave({...f, _bde_picked_counsellor: f.counsellor_id})}
+        className="mt-4 w-full py-2.5 rounded-xl text-white font-semibold text-sm disabled:opacity-40"
+        style={{background:isBDE?T.teal:T.blue}}>
+        Save lead{f.counsellor_id ? ` → assign to ${counsellors.find(c=>c.id===f.counsellor_id)?.name}` : ""}
+      </button>
     </Modal>
   );
 }

@@ -194,6 +194,14 @@ export default function App() {
         if (filterCall==="not_interested" && !lastOutcome.includes("Not interested")) return false;
         if (filterCall==="booked" && !lastOutcome.includes("Counselling")) return false;
         if (filterCall==="whatsapp" && !lastOutcome.includes("WhatsApp")) return false;
+        if (filterCall==="counselling_today") {
+          const sl = slots.find(x=>x.booked_by===s.id&&x.status==="booked"&&x.slot_date===today);
+          if (!sl) return false;
+        }
+        if (filterCall==="counselling_upcoming") {
+          const sl = slots.find(x=>x.booked_by===s.id&&x.status==="booked"&&x.slot_date>today);
+          if (!sl) return false;
+        }
         if (filterCall==="overdue_callback") {
           const cbLine = lastCall?.text?.split("\n").find(l=>l.startsWith("Callback:"));
           if (!cbLine) return false;
@@ -696,13 +704,22 @@ export default function App() {
                       </div>
                       <div className="space-y-2 min-h-[40px]">
                         {col.length===0 && <div className="text-[11px] text-slate-400 text-center py-3 rounded-xl border border-dashed" style={{borderColor:"#CBD5E1"}}>Empty</div>}
-                        {col.map(s=>(
+                        {col.map(s=>{
+                          const bookedSlot = slots.find(sl=>sl.booked_by===s.id&&sl.status==="booked");
+                          return (
                           <div key={s.id} className="card lift p-3">
                             <div className="flex items-center gap-1.5">
                               <button onClick={()=>openStudent(s.id)} className="font-semibold text-sm hover:underline text-left truncate flex-1">{s.name}</button>
                               {s.qualification && <span className="w-2 h-2 rounded-full shrink-0" style={{background:qualColor(s.qualification)}}/>}
                             </div>
                             <div className="text-[11px] text-slate-500">{memberName(s.assigned_to)||"Unassigned"}</div>
+                            {bookedSlot && (
+                              <div className="mt-1 flex items-center gap-1">
+                                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-lg num" style={{background:"#CCFBF1",color:"#0D9488"}}>
+                                  📅 {new Date(bookedSlot.slot_date).toLocaleDateString("en-GB",{day:"numeric",month:"short"})} · {bookedSlot.slot_time}
+                                </span>
+                              </div>
+                            )}
                             <div className="flex items-center gap-1 mt-2">
                               {(isAdmin||isCounsel||isVisa) && <button onClick={()=>moveStage(s.id,-1)} disabled={stageIdx(s.stage)===0} className="p-1 rounded hover:bg-slate-100 disabled:opacity-20"><ChevronLeft size={13}/></button>}
                               <a href={`tel:${s.phone}`} className="flex-1 flex justify-center p-2 rounded-lg text-white font-bold" style={{background:T.blue}}><PhoneCall size={14}/></a>
@@ -710,7 +727,8 @@ export default function App() {
                               {(isAdmin||isCounsel||isVisa) && <button onClick={()=>moveStage(s.id,1)} disabled={stageIdx(s.stage)===STAGES.length-1} className="p-1 rounded hover:bg-slate-100 disabled:opacity-20" style={{color:T.blue}}><ChevronRight size={13}/></button>}
                             </div>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   );
@@ -757,6 +775,8 @@ export default function App() {
                   <option value="never">📵 Never called</option>
                   <option value="callback_today">📅 Callback today</option>
                   <option value="overdue_callback">⚠️ Overdue callback</option>
+                  <option value="counselling_today">🎓 Counselling today</option>
+                  <option value="counselling_upcoming">📆 Counselling upcoming</option>
                   <option value="not_reachable">🔴 Not reachable</option>
                   <option value="busy">🟡 Busy — try again</option>
                   <option value="callback">🔵 Callback later</option>
@@ -816,8 +836,6 @@ export default function App() {
                             {(() => {
                               const notes = s.notes||[];
                               const lastCall = [...notes].reverse().find(n=>n.text?.startsWith("📞"));
-                              // Also check for counselling booking note
-                              const bookingNote = [...notes].reverse().find(n=>n.text?.startsWith("📅 Counselling booked"));
                               const outcome = lastCall ? lastCall.text.split("\n")[0].replace("📞 CALL — ","") : null;
                               const callColor = !outcome ? "#94A3B8"
                                 : outcome.includes("Not reachable") ? "#DC2626"
@@ -838,34 +856,25 @@ export default function App() {
                                 : outcome.includes("WhatsApp") ? "WhatsApp"
                                 : outcome?.slice(0,14)||"Called";
 
-                              // Extract slot date & time from booking note
-                              let slotDisplay = null;
-                              if (bookingNote) {
-                                // note format: "📅 Counselling booked — [name] on [date] at [time]"
-                                const onMatch = bookingNote.text.match(/on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2})/);
-                                if (onMatch) {
-                                  const d = new Date(onMatch[1]).toLocaleDateString("en-GB",{day:"numeric",month:"short"});
-                                  slotDisplay = `${d} · ${onMatch[2]}`;
-                                }
-                              }
+                              // Look up booked slot for this student
+                              const bookedSlot = slots.find(sl => sl.booked_by === s.id && sl.status === "booked");
 
                               return (
-                                <div>
+                                <div className="space-y-1">
                                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{background:callColor+"18",color:callColor}}>
                                     {shortLabel}
                                   </span>
-                                  {slotDisplay && (
-                                    <div className="flex items-center gap-1 mt-1">
-                                      <span className="text-[11px] font-bold px-2 py-0.5 rounded-lg num" style={{background:"#CCFBF1",color:"#0D9488"}}>
-                                        📅 {slotDisplay}
+                                  {bookedSlot ? (
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-[11px] font-extrabold px-2 py-1 rounded-lg num" style={{background:"#CCFBF1",color:"#0D9488"}}>
+                                        📅 {new Date(bookedSlot.slot_date).toLocaleDateString("en-GB",{day:"numeric",month:"short"})} · {bookedSlot.slot_time}
                                       </span>
                                     </div>
-                                  )}
-                                  {!slotDisplay && s.follow_up && (
-                                    <div className={`text-[11px] mt-0.5 num ${isOverdue(s)?"font-bold text-red-600":"text-slate-400"}`}>
+                                  ) : s.follow_up ? (
+                                    <div className={`text-[11px] num ${isOverdue(s)?"font-bold text-red-600":"text-slate-400"}`}>
                                       {isOverdue(s)?"⚠️ ":""}{s.follow_up}
                                     </div>
-                                  )}
+                                  ) : null}
                                 </div>
                               );
                             })()}

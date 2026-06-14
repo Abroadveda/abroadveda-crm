@@ -520,7 +520,7 @@ export default function App() {
   const openStudent = (id) => { setTab("students"); setSelected(id); setGlobalQ(""); };
 
 
-  if (loading) return <Splash text="Connecting to database…"/>;
+  if (loading) return <Splash text="Welcome to Abroadveda"/>;
   if (!dbOk) return (
     <div className="min-h-screen flex items-center justify-center p-6" style={{background:T.mist}}>
       <div className="bg-white rounded-2xl p-8 max-w-sm w-full shadow-lg text-center">

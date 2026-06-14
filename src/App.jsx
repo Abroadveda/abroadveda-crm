@@ -412,25 +412,20 @@ export default function App() {
   };
   const doBookSlot = async (slotId, studentId) => {
     try {
-      // 1. Find the slot BEFORE booking to get counsellor_id
       const slot = slots.find(x => x.id === slotId);
       const counsellorId = slot?.counsellor_id;
-
-      // 2. Book the slot in DB
+      // Book the slot — sets booked_by = studentId in DB
       const bookedSlot = await bookSlot(slotId, studentId);
       setSlots(p => p.map(x => x.id === slotId ? bookedSlot : x));
-
-      // 3. Assign counsellor to student + move to Counselling stage
       if (counsellorId && studentId) {
         const cName = memberName(counsellorId);
         const slotDate = slot?.slot_date || "";
         const slotTime = slot?.slot_time || "";
         const stName = students.find(s => s.id === studentId)?.name || "Student";
-
-        // THIS is the critical step — assign counsellor and move stage
+        // Assign counsellor + move to counsel stage
         await updStudent(studentId, { assigned_to: counsellorId, stage: "counsel" });
         await doAddNote(studentId, `📅 Counselling booked — ${cName} on ${slotDate} at ${slotTime}`);
-        notify(`✓ ${stName} → ${cName} on ${slotDate} at ${slotTime}`);
+        notify(`✓ ${stName} → ${cName} · ${slotDate} at ${slotTime}`);
       } else {
         notify("Slot booked ✓");
       }
@@ -479,13 +474,49 @@ export default function App() {
   };
   const sendToSheet = async () => {
     if (!webhookUrl) { notify("Add Google Sheets URL in Settings"); return; }
-    try { await fetch(webhookUrl,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain"},body:JSON.stringify({rows:students.map(s=>[s.name,s.phone,s.email||"",s.country,stageOf(s.stage).label,memberName(s.bde_id),memberName(s.assigned_to)])})}); notify("Sent to Google Sheets"); }
+    try {
+      await fetch(webhookUrl,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain"},
+        body:JSON.stringify({
+          type:"backup",
+          timestamp: new Date().toISOString(),
+          rows:students.map(s=>[
+            s.name, s.phone, s.email||"", s.country,
+            stageOf(s.stage).label, memberName(s.bde_id), memberName(s.assigned_to),
+            s.qualification||"", s.intake, s.level, s.field,
+            s.follow_up||"", new Date(s.created_at||Date.now()).toLocaleDateString("en-GB")
+          ])
+        })
+      });
+      notify("✓ Backed up to Google Sheets");
+    }
     catch { notify("Could not reach Google Sheets"); }
   };
+
+  // Auto-backup to Google Sheets whenever students data changes (debounced 30s)
+  useEffect(() => {
+    if (!webhookUrl || students.length === 0) return;
+    const t = setTimeout(() => {
+      fetch(webhookUrl, {
+        method:"POST", mode:"no-cors",
+        headers:{"Content-Type":"text/plain"},
+        body: JSON.stringify({
+          type:"auto_backup",
+          timestamp: new Date().toISOString(),
+          count: students.length,
+          rows: students.map(s=>[
+            s.name, s.phone, s.email||"", s.country,
+            stageOf(s.stage).label, memberName(s.bde_id), memberName(s.assigned_to),
+            s.qualification||"", s.follow_up||""
+          ])
+        })
+      }).catch(()=>{});
+    }, 30000); // 30 second debounce
+    return () => clearTimeout(t);
+  }, [students, webhookUrl]);
   const openStudent = (id) => { setTab("students"); setSelected(id); setGlobalQ(""); };
 
 
-  if (loading) return <Splash text="Welcome"/>;
+  if (loading) return <Splash text="Connecting to database…"/>;
   if (!dbOk) return (
     <div className="min-h-screen flex items-center justify-center p-6" style={{background:T.mist}}>
       <div className="bg-white rounded-2xl p-8 max-w-sm w-full shadow-lg text-center">
@@ -562,6 +593,7 @@ export default function App() {
         <div className="mt-auto space-y-1 pt-5 border-t border-white/10">
           {isAdmin && <button onClick={()=>setShowExport(true)} className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-semibold text-blue-100/80 hover:bg-white/10"><Download size={15}/> Export leads</button>}
           {isAdmin && <button onClick={()=>setShowImport(true)} className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-semibold text-blue-100/80 hover:bg-white/10"><Upload size={15}/> Import leads</button>}
+          {isAdmin && webhookUrl && <button onClick={sendToSheet} className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-semibold text-green-300/80 hover:bg-white/10"><Send size={15}/> Backup to Sheets</button>}
           {isAdmin && <button onClick={()=>setShowSettings(true)} className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-semibold text-blue-100/80 hover:bg-white/10"><Cog size={15}/> Settings</button>}
           <div className="px-3 pt-1 text-[10px] text-blue-200/50 flex items-center gap-1.5">{syncing?<><Loader2 size={9} className="animate-spin"/> Syncing…</>:<><Wifi size={9}/> Live</>}</div>
         </div>
@@ -705,7 +737,19 @@ export default function App() {
                       <div className="space-y-2 min-h-[40px]">
                         {col.length===0 && <div className="text-[11px] text-slate-400 text-center py-3 rounded-xl border border-dashed" style={{borderColor:"#CBD5E1"}}>Empty</div>}
                         {col.map(s=>{
-                          const bookedSlot = slots.find(sl=>sl.booked_by===s.id&&sl.status==="booked");
+                          // Find booked slot via booked_by → notes → counsellor fallback
+                          const direct = slots.find(sl=>sl.booked_by===s.id&&sl.status==="booked");
+                          let bookedSlot = direct;
+                          if (!bookedSlot) {
+                            const bn = (s.notes||[]).find(n=>n.text?.startsWith("📅 Counselling booked"));
+                            if (bn) {
+                              const m = bn.text.match(/on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2})/);
+                              if (m) bookedSlot = slots.find(x=>x.slot_date===m[1]&&x.slot_time===m[2]&&x.status==="booked")||null;
+                            }
+                          }
+                          if (!bookedSlot && s.stage==="counsel" && s.assigned_to) {
+                            bookedSlot = slots.find(sl=>sl.counsellor_id===s.assigned_to&&sl.status==="booked")||null;
+                          }
                           return (
                           <div key={s.id} className="card lift p-3">
                             <div className="flex items-center gap-1.5">
@@ -856,8 +900,27 @@ export default function App() {
                                 : outcome.includes("WhatsApp") ? "WhatsApp"
                                 : outcome?.slice(0,14)||"Called";
 
-                              // Look up booked slot for this student
-                              const bookedSlot = slots.find(sl => sl.booked_by === s.id && sl.status === "booked");
+                              // Find booked slot: 1) by booked_by field, 2) by notes date+time match, 3) by counsellor+stage
+                              const findSlotForStudent = (student) => {
+                                // Best: direct booked_by match
+                                const direct = slots.find(sl => sl.booked_by === student.id && sl.status === "booked");
+                                if (direct) return direct;
+                                // Fallback: find slot date+time from student's booking note
+                                const bookingNote = (student.notes||[]).find(n => n.text?.startsWith("📅 Counselling booked"));
+                                if (bookingNote) {
+                                  const m = bookingNote.text.match(/on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2})/);
+                                  if (m) {
+                                    const sl = slots.find(x => x.slot_date === m[1] && x.slot_time === m[2] && x.status === "booked");
+                                    if (sl) return sl;
+                                  }
+                                }
+                                // Last resort: counsellor match for counsel stage
+                                if (student.stage === "counsel" && student.assigned_to) {
+                                  return slots.find(sl => sl.counsellor_id === student.assigned_to && sl.status === "booked") || null;
+                                }
+                                return null;
+                              };
+                              const bookedSlot = findSlotForStudent(s);
 
                               return (
                                 <div className="space-y-1">

@@ -73,7 +73,10 @@ const fmtDate  = (d)  => new Date(d).toLocaleDateString("en-GB",{weekday:"short"
 const qualColor= (q)  => QUALS.find((x) => x.id===q)?.color || "#64748B";
 const waNum    = (p)  => "https://wa.me/"+String(p||"").replace(/[^0-9]/g,"");
 const isOverdue= (s)  => s.follow_up && new Date(s.follow_up) < new Date(new Date().toDateString());
-const todayStr = ()   => new Date().toISOString().slice(0,10);
+const todayStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+};
 const inp      = { width:"100%", padding:"9px 12px", borderRadius:12, border:"1px solid #CBD5E1", fontSize:14, background:"#fff", marginTop:4, fontWeight:500 };
 
 // roles stored as comma-separated e.g. "BDE,Counsellor"
@@ -370,6 +373,20 @@ export default function App() {
       }
       const refreshed=await getStudents(); setStudents(refreshed);
       setShowAdd(false); notify("Lead saved");
+      // Auto-backup to Google Sheets immediately when new lead added
+      if (webhookUrl) {
+        try {
+          fetch(webhookUrl, {
+            method:"POST", mode:"no-cors",
+            headers:{"Content-Type":"text/plain"},
+            body: JSON.stringify({
+              type:"new_lead",
+              timestamp: new Date().toISOString(),
+              student: { name:ff.name, phone:ff.phone, email:ff.email||"", country:ff.country, level:ff.level, stage:"lead" }
+            })
+          });
+        } catch(e) {}
+      }
     } catch(e) { notify("Could not save: "+e.message); }
   };
   const doDeleteStudent = async (id) => {
@@ -472,45 +489,32 @@ export default function App() {
     else { const csv=XLSX.utils.sheet_to_csv(XLSX.utils.json_to_sheet(exportRows())); const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.download="abroadveda-leads.csv"; a.click(); notify("CSV downloaded"); }
     setExportPass(""); setShowExportPass(false); setShowExport(false);
   };
-  const sendToSheet = async () => {
-    if (!webhookUrl) { notify("Add Google Sheets URL in Settings"); return; }
+  const sendToSheet = async (silent=false) => {
+    if (!webhookUrl) { if(!silent) notify("Add Google Sheets URL in Settings first"); return; }
     try {
-      await fetch(webhookUrl,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain"},
-        body:JSON.stringify({
-          type:"backup",
-          timestamp: new Date().toISOString(),
-          rows:students.map(s=>[
-            s.name, s.phone, s.email||"", s.country,
-            stageOf(s.stage).label, memberName(s.bde_id), memberName(s.assigned_to),
-            s.qualification||"", s.intake, s.level, s.field,
-            s.follow_up||"", new Date(s.created_at||Date.now()).toLocaleDateString("en-GB")
-          ])
-        })
-      });
-      notify("✓ Backed up to Google Sheets");
-    }
-    catch { notify("Could not reach Google Sheets"); }
-  };
-
-  // Auto-backup to Google Sheets whenever students data changes (debounced 30s)
-  useEffect(() => {
-    if (!webhookUrl || students.length === 0) return;
-    const t = setTimeout(() => {
-      fetch(webhookUrl, {
+      await fetch(webhookUrl, {
         method:"POST", mode:"no-cors",
         headers:{"Content-Type":"text/plain"},
         body: JSON.stringify({
-          type:"auto_backup",
+          type:"full_backup",
           timestamp: new Date().toISOString(),
-          count: students.length,
+          total: students.length,
           rows: students.map(s=>[
-            s.name, s.phone, s.email||"", s.country,
+            s.name, s.phone, s.email||"", s.country, s.level, s.intake,
             stageOf(s.stage).label, memberName(s.bde_id), memberName(s.assigned_to),
-            s.qualification||"", s.follow_up||""
+            s.qualification||"", s.follow_up||"",
+            new Date(s.created_at||Date.now()).toLocaleDateString("en-GB")
           ])
         })
-      }).catch(()=>{});
-    }, 30000); // 30 second debounce
+      });
+      if(!silent) notify("✓ Backed up to Google Sheets");
+    } catch { if(!silent) notify("Could not reach Google Sheets"); }
+  };
+
+  // Auto-backup every 2 minutes when data changes
+  useEffect(() => {
+    if (!webhookUrl || students.length === 0) return;
+    const t = setTimeout(() => sendToSheet(true), 2 * 60 * 1000);
     return () => clearTimeout(t);
   }, [students, webhookUrl]);
   const openStudent = (id) => { setTab("students"); setSelected(id); setGlobalQ(""); };
@@ -593,7 +597,17 @@ export default function App() {
         <div className="mt-auto space-y-1 pt-5 border-t border-white/10">
           {isAdmin && <button onClick={()=>setShowExport(true)} className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-semibold text-blue-100/80 hover:bg-white/10"><Download size={15}/> Export leads</button>}
           {isAdmin && <button onClick={()=>setShowImport(true)} className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-semibold text-blue-100/80 hover:bg-white/10"><Upload size={15}/> Import leads</button>}
-          {isAdmin && webhookUrl && <button onClick={sendToSheet} className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-semibold text-green-300/80 hover:bg-white/10"><Send size={15}/> Backup to Sheets</button>}
+          {isAdmin && webhookUrl && (
+            <button onClick={()=>sendToSheet(false)} className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-semibold hover:bg-white/10" style={{color:"#4ADE80"}}>
+              <Send size={15}/> Backup to Sheets
+              <span className="ml-auto text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{background:"#166534",color:"#4ADE80"}}>LIVE</span>
+            </button>
+          )}
+          {isAdmin && !webhookUrl && (
+            <button onClick={()=>setShowSettings(true)} className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-semibold text-amber-300/80 hover:bg-white/10">
+              <Send size={15}/> Connect Drive backup
+            </button>
+          )}
           {isAdmin && <button onClick={()=>setShowSettings(true)} className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-semibold text-blue-100/80 hover:bg-white/10"><Cog size={15}/> Settings</button>}
           <div className="px-3 pt-1 text-[10px] text-blue-200/50 flex items-center gap-1.5">{syncing?<><Loader2 size={9} className="animate-spin"/> Syncing…</>:<><Wifi size={9}/> Live</>}</div>
         </div>

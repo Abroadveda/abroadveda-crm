@@ -342,18 +342,22 @@ export default function App() {
   const doAddSlot    = async (f)     => { try { const s=await createSlot(f); setSlots(p=>[...p,s]); setShowAddSlot(false); notify("Slot added"); } catch { notify("Could not add slot"); } };
   const doBookSlot = async (slotId, studentId) => {
     try {
-      const s = await bookSlot(slotId, studentId);
-      setSlots(p=>p.map(x=>x.id===slotId?s:x));
-      // Auto-assign student to the counsellor of this slot
-      const slot = slots.find(x=>x.id===slotId) || s;
-      const counsellorId = slot?.counsellor_id || s?.counsellor_id;
+      // Get counsellor_id from existing slot state BEFORE booking (more reliable)
+      const existingSlot = slots.find(x=>x.id===slotId);
+      const bookedSlot = await bookSlot(slotId, studentId);
+      setSlots(p=>p.map(x=>x.id===slotId?bookedSlot:x));
+      // Use counsellor_id from existing slot or from DB response
+      const counsellorId = existingSlot?.counsellor_id || bookedSlot?.counsellor_id;
       if (counsellorId && studentId) {
-        // update student: assigned_to = counsellor, stage = counsel
+        const slotDate = existingSlot?.slot_date || bookedSlot?.slot_date || "";
+        const slotTime = existingSlot?.slot_time || bookedSlot?.slot_time || "";
+        const cName = memberName(counsellorId) || "counsellor";
+        // Auto-assign student to counsellor + advance to counsel stage
         await updStudent(studentId, { assigned_to: counsellorId, stage: "counsel" });
-        await doAddNote(studentId, `Counselling slot booked with ${memberName(counsellorId)} on ${slot?.slot_date||s?.slot_date} at ${slot?.slot_time||s?.slot_time}`);
-        notify(`Slot booked — student assigned to ${memberName(counsellorId)}`);
+        await doAddNote(studentId, `Counselling booked with ${cName} on ${slotDate} at ${slotTime}`);
+        notify(`Slot booked ✓ — ${studentId===currentUser?.id?"":team.find(t=>t.id===studentId)?.name||"Student"} assigned to ${cName}`);
       } else {
-        notify("Slot booked");
+        notify("Slot booked ✓");
       }
     } catch(e) { notify("Could not book: " + e.message); console.error(e); }
   };
@@ -1194,52 +1198,40 @@ function TodaySchedule({ slots, students, team, isAdmin, isBDE, onTabChange }) {
   const counsellorName = id => team.find(t=>t.id===id)?.name||"";
   return (
     <div className="space-y-3">
-      {/* Today grid */}
+      {/* Today & upcoming schedule */}
       <div className="card p-5">
         <div className="flex items-center justify-between mb-3">
           <h2 className="font-bold text-sm flex items-center gap-2">
             <Calendar size={15} style={{color:"#0d6efd"}}/>
-            Today's counselling — {new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short"})}
+            Counselling schedule
           </h2>
-          {upcomingBooked.length>0 && (
-            <span className="text-[11px] font-bold px-2 py-1 rounded-full" style={{background:"#CCFBF1",color:"#134E4A"}}>
-              {upcomingBooked.length} booking{upcomingBooked.length!==1?"s":""} upcoming
-            </span>
-          )}
+          <button onClick={()=>onTabChange("slots")} className="text-xs font-bold px-3 py-1.5 rounded-lg text-white" style={{background:"#0d6efd"}}>
+            View & book slots →
+          </button>
         </div>
-        <div className="grid grid-cols-4 sm:grid-cols-7 gap-1.5">
-          {SLOT_TIMES.map(time=>{
-            const booked = todaySlots.find(s=>s.slot_time===time&&s.status==="booked");
-            const avail  = todaySlots.find(s=>s.slot_time===time&&s.status==="available");
-            const bookedStudent = booked?.booked_by ? students.find(s=>s.id===booked.booked_by) : null;
-            const bookedName = bookedStudent?.name || (booked?"Booked":"");
-            const cName = booked ? counsellorName(booked.counsellor_id) : avail ? counsellorName(avail.counsellor_id) : "";
-            const type = booked?"booked":avail?"available":"free";
-            return (
-              <div key={time} className="rounded-xl border-2 p-2 text-center"
-                style={{
-                  borderColor:type==="booked"?"#EF4444":type==="available"?"#0d6efd":"#22C55E",
-                  background: type==="booked"?"#FEF2F2":type==="available"?"#EFF6FF":"#F0FDF4"
-                }}>
-                <div className="text-xs font-extrabold" style={{color:type==="booked"?"#DC2626":type==="available"?"#0d6efd":"#16A34A"}}>{time}</div>
-                {type==="booked" ? (
-                  <div>
-                    <div className="text-[9px] font-bold text-red-700 mt-0.5 truncate" title={bookedName}>{bookedName}</div>
-                    {cName&&<div className="text-[8px] text-slate-400 truncate">{cName}</div>}
+        {/* Today row */}
+        <div className="mb-3">
+          <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">
+            Today — {new Date().toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short"})}
+          </div>
+          <div className="grid grid-cols-4 sm:grid-cols-7 gap-1.5">
+            {SLOT_TIMES.map(time=>{
+              const booked = todaySlots.find(s=>s.slot_time===time&&s.status==="booked");
+              const avail  = todaySlots.find(s=>s.slot_time===time&&s.status==="available");
+              const bookedStudent = booked?.booked_by ? students.find(s=>s.id===booked.booked_by) : null;
+              const type = booked?"booked":avail?"available":"free";
+              return (
+                <div key={time} className="rounded-xl border-2 p-1.5 text-center"
+                  style={{borderColor:type==="booked"?"#EF4444":type==="available"?"#0d6efd":"#22C55E",background:type==="booked"?"#FEF2F2":type==="available"?"#EFF6FF":"#F0FDF4"}}>
+                  <div className="text-xs font-extrabold" style={{color:type==="booked"?"#DC2626":type==="available"?"#0d6efd":"#16A34A"}}>{time}</div>
+                  <div className="text-[8px] font-semibold mt-0.5" style={{color:type==="booked"?"#DC2626":type==="available"?"#0d6efd":"#16A34A"}}>
+                    {type==="booked"?(bookedStudent?.name||"Booked"):type==="available"?"Avail":"Free"}
                   </div>
-                ) : (
-                  <div>
-                    <div className="text-[9px] font-semibold mt-0.5" style={{color:type==="available"?"#0d6efd":"#16A34A"}}>{type==="available"?"Available":"Free"}</div>
-                    {cName&&<div className="text-[8px] text-slate-400 truncate">{cName}</div>}
-                  </div>
-                )}
-              </div>
-            );
-          })}
+                </div>
+              );
+            })}
+          </div>
         </div>
-        <button onClick={()=>onTabChange("slots")} className="mt-3 w-full py-2 rounded-xl text-xs font-bold border" style={{borderColor:"#0d6efd",color:"#0d6efd"}}>
-          View & book slots →
-        </button>
       </div>
       {/* Upcoming booked slots — always show */}
       <div className="card p-4">
@@ -1568,13 +1560,15 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
 
   const availableSlots = slots.filter(sl=>sl.status==="available"&&sl.slot_date>=todayStr());
 
-  const saveCallLog = () => {
+  const saveCallLog = async () => {
     let text=`📞 CALL — ${callForm.outcome}`;
     if (callForm.notes) text+=`\nNotes: ${callForm.notes}`;
     if (callForm.date&&callForm.time) text+=`\nCallback: ${callForm.date} at ${callForm.time}`;
-    if (callForm.outcome.includes("Counselling")) text+=`\nCounselling booked`;
+    if (callForm.outcome.includes("Counselling")&&callForm.bookedSlot) {
+      text+=`\nCounselling booked`;
+      await onBookSlot(callForm.bookedSlot, s.id);
+    }
     onAddNote(s.id,text);
-    if (callForm.outcome.includes("Counselling")&&callForm.bookedSlot) onBookSlot(callForm.bookedSlot,s.id);
     setCallForm({outcome:CALL_OUTCOMES[0],notes:"",date:"",time:""});
     setShowCallModal(false);
   };
@@ -1762,7 +1756,7 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
                 {availableSlots.slice(0,6).map(sl=>{
                   const cName = (team.find(t=>t.id===sl.counsellor_id)||{}).name||"?";
                   return (
-                    <button key={sl.id} onClick={()=>{if(window.confirm(`Book ${sl.slot_time} on ${fmtDate(sl.slot_date)} with ${cName}?`)) onBookSlot(sl.id,s.id);}}
+                    <button key={sl.id} onClick={()=>{if(window.confirm(`Book ${sl.slot_time} on ${fmtDate(sl.slot_date)} with ${cName} for ${s.name}?`)) onBookSlot(sl.id,s.id);}}
                       className="text-[11px] font-bold px-3 py-1.5 rounded-lg text-white" style={{background:T.teal}}>
                       {fmtDate(sl.slot_date)} {sl.slot_time} — {cName}
                     </button>

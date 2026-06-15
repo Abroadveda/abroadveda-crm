@@ -147,6 +147,7 @@ export default function App() {
   const [exportStage,setExportStage]   = useState("all");
   const [showImport,setShowImport]     = useState(false);
   const [showAddSlot,setShowAddSlot]   = useState(false);
+  const [pendingBooking,setPendingBooking] = useState(null); // {counsellorId, studentId} — pre-fills Slots booking flow
   const [showDb,setShowDb]       = useState(false);
   const [exportPass,setExportPass]     = useState("");
   const [showExportPass,setShowExportPass] = useState(false);
@@ -342,7 +343,14 @@ export default function App() {
     // Directly assign counsellor and move to counsel stage — works for both BDE and Admin
     await updStudent(studentId, { assigned_to: cId, stage: "counsel" });
     await doAddNote(studentId, `✅ Counsellor assigned: ${cName} — moved to Counselling stage`);
-    notify(`Assigned to ${cName} → Counselling ✓`);
+    // For BDEs: force them to immediately book a slot so we never get orphan Counselling students
+    if (isBDE) {
+      setPendingBooking({ counsellorId: cId, studentId });
+      setTab("slots");
+      notify(`Assigned to ${cName} → now pick a counselling slot`);
+    } else {
+      notify(`Assigned to ${cName} → Counselling ✓`);
+    }
   };
 
   // Bulk assign
@@ -1056,7 +1064,8 @@ export default function App() {
             <SlotsView slots={slots} team={team} students={students} isAdmin={isAdmin} isBDE={isBDE} isCounsel={isCounsel}
               currentUser={currentUser} memberName={memberName}
               onAddSlot={doAddSlot} onBookSlot={doBookSlot} onFreeSlot={doFreeSlot} onDeleteSlot={doDeleteSlot}
-              showAddSlot={showAddSlot} setShowAddSlot={setShowAddSlot}/>
+              showAddSlot={showAddSlot} setShowAddSlot={setShowAddSlot}
+              pendingBooking={pendingBooking} clearPendingBooking={()=>setPendingBooking(null)}/>
           )}
 
           {/* TEAM */}
@@ -1552,7 +1561,7 @@ function TodaySchedule({ slots, students, team, isAdmin, isBDE, onTabChange }) {
   );
 }
 
-function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUser, memberName, onAddSlot, onBookSlot, onFreeSlot, onDeleteSlot, showAddSlot, setShowAddSlot }) {
+function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUser, memberName, onAddSlot, onBookSlot, onFreeSlot, onDeleteSlot, showAddSlot, setShowAddSlot, pendingBooking, clearPendingBooking }) {
   const [selDate, setSelDate]   = useState(todayStr());
   const [selCounsellor, setSelCounsellor] = useState("all");
   const [bookingSlot, setBookingSlot] = useState(null);
@@ -1565,6 +1574,19 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
   const [bdeStudent, setBdeStudent] = useState("");
   const [bdeBooking, setBdeBooking] = useState(false);
   const counsellors = team.filter(t=>hasRole(t,"Counsellor"));
+
+  // When the BDE was just sent here from "Assign counsellor", pre-fill the flow
+  // and jump straight to slot picking.
+  useEffect(() => {
+    if (pendingBooking && isBDE) {
+      setBdeCounsellor(pendingBooking.counsellorId);
+      setBdeStudent(pendingBooking.studentId);
+      setBdeDate(todayStr());
+      setBdeStep(2);
+      clearPendingBooking && clearPendingBooking();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingBooking]);
 
   const studentName = id => students.find(s=>s.id===id)?.name||"";
 

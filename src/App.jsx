@@ -15,7 +15,8 @@ import {
   upsertDocument, deleteDocument,
   getTeam, createTeamMember, updateTeamMember, deleteTeamMember,
   getSlots, createSlot, bookSlot, freeSlot, deleteSlot,
-  bulkInsertStudents, getSetting, setSetting, checkDbHealth
+  bulkInsertStudents, getSetting, setSetting, checkDbHealth,
+  deleteNote as dbDeleteNote, updateNote as dbUpdateNote
 } from "./lib/db";
 
 const T = { ink:"#0A1F3D", blue:"#0d6efd", saffron:"#F59E0B", mist:"#F5F7FB", line:"#E5EAF3", ok:"#16A34A", danger:"#DC2626", teal:"#14B8A6", purple:"#8B5CF6" };
@@ -29,18 +30,18 @@ const ROLE_META = {
 const ALL_MEMBER_ROLES = ["BDE","Counsellor","Visa Officer"];
 
 const STAGES = [
-  { id:"lead",        label:"New Lead",               color:"#64748B" },
-  { id:"notinterested",label:"Not Interested",        color:"#DC2626" },
-  { id:"processing",  label:"Processing",             color:"#F59E0B" },
-  { id:"enrolled",    label:"Already Enrolled",       color:"#8B5CF6" },
-  { id:"counsel",     label:"Counselling",            color:"#0d6efd" },
-  { id:"shortlist",   label:"Shortlisting",           color:"#6366F1" },
-  { id:"applied",     label:"Application",            color:"#8B5CF6" },
-  { id:"offer",       label:"Offer Received",         color:"#F59E0B" },
-  { id:"finance",     label:"Finance & Scholarship",  color:"#14B8A6" },
-  { id:"visa",        label:"Visa Filing",            color:"#EF4444" },
-  { id:"predep",      label:"Pre-Departure",          color:"#10B981" },
-  { id:"departed",    label:"Departed 🎉",            color:"#16A34A" },
+  { id:"lead",         label:"New Lead",               color:"#64748B" },
+  { id:"processing",   label:"Processing",             color:"#F59E0B" },
+  { id:"counsel",      label:"Counselling",            color:"#0d6efd" },
+  { id:"shortlist",    label:"Shortlisting",           color:"#6366F1" },
+  { id:"applied",      label:"Application",            color:"#8B5CF6" },
+  { id:"offer",        label:"Offer Received",         color:"#F59E0B" },
+  { id:"finance",      label:"Finance & Scholarship",  color:"#14B8A6" },
+  { id:"visa",         label:"Visa Filing",            color:"#EF4444" },
+  { id:"predep",       label:"Pre-Departure",          color:"#10B981" },
+  { id:"departed",     label:"Departed 🎉",            color:"#16A34A" },
+  { id:"enrolled",     label:"Already Enrolled",       color:"#8B5CF6" },
+  { id:"notinterested",label:"Cancelled",              color:"#DC2626" },
 ];
 const COUNTRIES    = ["UK","Ireland","Germany","Australia","New Zealand","Canada","USA","Europe"];
 const INTAKES      = ["January","May","September","Other"];
@@ -290,6 +291,20 @@ export default function App() {
     if (!text?.trim()) return;
     try { const n=await dbAddNote(studentId,text.trim()); setStudents(p=>p.map(s=>s.id===studentId?{...s,notes:[n,...(s.notes||[])]}:s)); }
     catch { notify("Could not save note"); }
+  };
+
+  const doDeleteNote = async (studentId, noteId) => {
+    try {
+      await dbDeleteNote(noteId);
+      setStudents(p=>p.map(s=>s.id===studentId?{...s,notes:(s.notes||[]).filter(n=>n.id!==noteId)}:s));
+    } catch(e) { notify("Could not delete: " + e.message); }
+  };
+
+  const doUpdateNote = async (studentId, noteId, text) => {
+    try {
+      await dbUpdateNote(noteId, text);
+      setStudents(p=>p.map(s=>s.id===studentId?{...s,notes:(s.notes||[]).map(n=>n.id===noteId?{...n,text}:n)}:s));
+    } catch(e) { notify("Could not update: " + e.message); }
   };
 
   const assignToBDE = async (studentId, bdeId) => {
@@ -1003,7 +1018,7 @@ export default function App() {
               slots={slots}
               onBack={()=>setSelected(null)} onUpdate={updStudent} onMove={moveStage}
               onAssignBDE={assignToBDE} onAssignCounsellor={assignCounsellor}
-              onAddNote={doAddNote} onBookSlot={doBookSlot}
+              onAddNote={doAddNote} onDeleteNote={doDeleteNote} onUpdateNote={doUpdateNote} onBookSlot={doBookSlot}
               onDeleteStudent={doDeleteStudent}
               onAddApp={doAddApp} onUpdateApp={doUpdateApp} onDeleteApp={doDeleteApp}
               onCycleDoc={doCycleDoc} onAddDoc={doAddDoc} onDeleteDoc={doDeleteDoc}
@@ -1924,7 +1939,7 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
 
 
 /* ════ STUDENT DETAIL ════ */
-function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmin, isBDE, isCounsel, isVisa, slots, onBack, onUpdate, onMove, onAssignBDE, onAssignCounsellor, onAddNote, onBookSlot, onDeleteStudent, onAddApp, onUpdateApp, onDeleteApp, onCycleDoc, onAddDoc, onDeleteDoc }) {
+function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmin, isBDE, isCounsel, isVisa, slots, onBack, onUpdate, onMove, onAssignBDE, onAssignCounsellor, onAddNote, onDeleteNote, onUpdateNote, onBookSlot, onDeleteStudent, onAddApp, onUpdateApp, onDeleteApp, onCycleDoc, onAddDoc, onDeleteDoc }) {
   const initTab = isBDE?"calls":isCounsel?"session":"overview";
   const [ptab,setPtab]       = useState(initTab);
   const [noteText,setNoteText] = useState("");
@@ -2252,12 +2267,15 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
               const header=lines[0].replace("🎓 SESSION — ","");
               const outcome=lines.find(l=>l.startsWith("Outcome:"))?.slice(9);
               const notesTxt=lines.find(l=>l.startsWith("Notes:"))?.slice(7);
+              const fullText = lines.slice(1).join("\n");
               return (
-                <div key={idx} className="border rounded-xl p-3" style={{borderColor:T.line}}>
-                  <div className="flex items-center gap-2 mb-1"><Video size={13} style={{color:T.purple}}/><span className="text-xs font-bold flex-1" style={{color:T.purple}}>{header}</span><span className="text-[11px] text-slate-400">{new Date(n.created_at||Date.now()).toLocaleDateString("en-GB",{day:"numeric",month:"short"})}</span></div>
-                  {outcome && <p className="text-xs font-semibold text-slate-700 ml-5 mb-1">{outcome}</p>}
-                  {notesTxt && <p className="text-sm text-slate-600 ml-5">{notesTxt}</p>}
-                </div>
+                <SessionCard key={n.id||idx}
+                  header={header} outcome={outcome} notesTxt={notesTxt}
+                  fullText={fullText} date={n.created_at} noteId={n.id}
+                  studentId={s.id}
+                  onDelete={onDeleteNote} onUpdate={onUpdateNote}
+                  T={T}
+                />
               );
             })}
           </div>
@@ -2796,12 +2814,60 @@ function ImportModal({ team, onClose, onImport }) {
 }
 
 /* ════ SMALL HELPERS ════ */
+function SessionCard({ header, outcome, notesTxt, fullText, date, noteId, studentId, onDelete, onUpdate, T }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const [editing, setEditing] = React.useState(false);
+  const [editText, setEditText] = React.useState(notesTxt||"");
+
+  const saveEdit = () => {
+    if (!onUpdate || !noteId) return;
+    // Rebuild the note text preserving header/outcome
+    let rebuilt = `🎓 SESSION — ${header}`;
+    if (outcome) rebuilt += `\nOutcome: ${outcome}`;
+    if (editText.trim()) rebuilt += `\nNotes: ${editText.trim()}`;
+    onUpdate(studentId, noteId, rebuilt);
+    setEditing(false);
+  };
+
+  return (
+    <div className="border rounded-xl p-3" style={{borderColor:"#E5EAF3"}}>
+      <div className="flex items-center gap-2 mb-1">
+        <span style={{fontSize:13,color:T.purple}}>🎓</span>
+        <span className="text-xs font-bold flex-1" style={{color:T.purple}}>{header}</span>
+        <span className="text-[11px] text-slate-400">{new Date(date||Date.now()).toLocaleDateString("en-GB",{day:"numeric",month:"short"})}</span>
+        <button onClick={()=>setExpanded(v=>!v)} className="text-[11px] text-slate-400 hover:text-slate-600 px-1">{expanded?"▲ Less":"▼ More"}</button>
+        <button onClick={()=>setEditing(v=>!v)} className="p-1 rounded hover:bg-blue-50" title="Edit"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#0d6efd" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
+        <button onClick={()=>{if(window.confirm("Delete this session?")) onDelete&&onDelete(studentId,noteId);}} className="p-1 rounded hover:bg-red-50" title="Delete"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#DC2626" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg></button>
+      </div>
+      {outcome && <p className="text-xs font-semibold text-slate-700 ml-5 mb-1">{outcome}</p>}
+      {editing ? (
+        <div className="ml-5 mt-2 space-y-2">
+          <textarea value={editText} onChange={e=>setEditText(e.target.value)} rows={3} className="w-full px-3 py-2 rounded-xl border text-sm" style={{borderColor:"#CBD5E1",resize:"vertical"}}/>
+          <div className="flex gap-2">
+            <button onClick={saveEdit} className="px-3 py-1.5 rounded-lg text-white text-xs font-semibold" style={{background:"#0d6efd"}}>Save</button>
+            <button onClick={()=>setEditing(false)} className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-500 border">Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <>
+          {notesTxt && <p className={`text-sm text-slate-600 ml-5 ${expanded?"":"line-clamp-2"}`} style={expanded?{}:{overflow:"hidden",display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical"}}>{notesTxt}</p>}
+          {expanded && fullText && fullText.replace(`Notes: ${notesTxt}`,"").trim() && (
+            <pre className="text-xs text-slate-500 ml-5 mt-1 whitespace-pre-wrap">{fullText.replace(`Notes: ${notesTxt}`,"").replace(`Outcome: ${outcome}`,"").trim()}</pre>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function Splash({ text }) {
   return (
     <div className="min-h-screen flex items-center justify-center" style={{background:"linear-gradient(160deg,#0A1F3D,#13315C)"}}>
       <div className="text-center">
-        <div className="w-16 h-16 mx-auto rounded-2xl flex items-center justify-center font-extrabold text-white text-2xl mb-4" style={{background:"linear-gradient(135deg,#0d6efd,#F59E0B)"}}>AV</div>
-        <div className="flex items-center gap-2 text-white/70 justify-center"><Loader2 className="animate-spin" size={16}/>{text}</div>
+        <div className="w-20 h-20 mx-auto rounded-2xl flex items-center justify-center font-extrabold text-white text-2xl mb-5" style={{background:"linear-gradient(135deg,#0d6efd,#F59E0B)"}}>AV</div>
+        <h1 className="text-2xl font-extrabold text-white mb-1">Welcome to Abroadveda</h1>
+        <p className="text-white/50 text-sm mb-5">CRM Workspace</p>
+        <div className="flex items-center gap-2 text-white/50 justify-center text-xs"><Loader2 className="animate-spin" size={14}/>{text}</div>
       </div>
     </div>
   );

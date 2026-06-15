@@ -108,30 +108,46 @@ export async function deleteTeamMember(id) {
 
 /* ── SLOTS ── */
 const SLOT_SELECT = '*, student:students!booked_by(id,name)'
+
+// Fallback: fetch slots without join, then attach student names in a separate query.
+// Used when PostgREST hasn't picked up the FK relationship yet.
+async function attachStudentNames(slots) {
+  if (!slots || slots.length === 0) return slots || []
+  const ids = [...new Set(slots.map(s => s.booked_by).filter(Boolean))]
+  if (ids.length === 0) return slots
+  const { data: studs } = await supabase.from('students').select('id,name').in('id', ids)
+  const map = new Map((studs || []).map(s => [s.id, s]))
+  return slots.map(s => s.booked_by ? { ...s, student: map.get(s.booked_by) || null } : s)
+}
+
 export async function getSlots() {
-  // Try with FK join first so each booked slot carries the student's name
+  // Try with FK join first
   let { data, error } = await supabase.from('counselling_slots').select(SLOT_SELECT).order('slot_date').order('slot_time')
-  if (error) {
-    // Fallback if FK relationship isn't recognised by PostgREST
-    const r = await supabase.from('counselling_slots').select('*').order('slot_date').order('slot_time')
-    return r.data || []
-  }
-  return data || []
+  if (!error && data) return data
+  // Fallback: plain select + separate student lookup
+  const r = await supabase.from('counselling_slots').select('*').order('slot_date').order('slot_time')
+  return attachStudentNames(r.data || [])
 }
 export async function createSlot(slot) {
-  const { data, error } = await supabase.from('counselling_slots').insert([slot]).select(SLOT_SELECT).single()
-  if (error) throw error
-  return data
+  const tryJoin = await supabase.from('counselling_slots').insert([slot]).select(SLOT_SELECT).single()
+  if (!tryJoin.error) return tryJoin.data
+  const r = await supabase.from('counselling_slots').insert([slot]).select().single()
+  if (r.error) throw r.error
+  return (await attachStudentNames([r.data]))[0]
 }
 export async function bookSlot(slotId, studentId) {
-  const { data, error } = await supabase.from('counselling_slots').update({ booked_by: studentId, status: 'booked' }).eq('id', slotId).select(SLOT_SELECT).single()
-  if (error) throw error
-  return data
+  const tryJoin = await supabase.from('counselling_slots').update({ booked_by: studentId, status: 'booked' }).eq('id', slotId).select(SLOT_SELECT).single()
+  if (!tryJoin.error) return tryJoin.data
+  const r = await supabase.from('counselling_slots').update({ booked_by: studentId, status: 'booked' }).eq('id', slotId).select().single()
+  if (r.error) throw r.error
+  return (await attachStudentNames([r.data]))[0]
 }
 export async function freeSlot(slotId) {
-  const { data, error } = await supabase.from('counselling_slots').update({ booked_by: null, status: 'available' }).eq('id', slotId).select(SLOT_SELECT).single()
-  if (error) throw error
-  return data
+  const tryJoin = await supabase.from('counselling_slots').update({ booked_by: null, status: 'available' }).eq('id', slotId).select(SLOT_SELECT).single()
+  if (!tryJoin.error) return tryJoin.data
+  const r = await supabase.from('counselling_slots').update({ booked_by: null, status: 'available' }).eq('id', slotId).select().single()
+  if (r.error) throw r.error
+  return r.data
 }
 export async function deleteSlot(slotId) {
   const { error } = await supabase.from('counselling_slots').delete().eq('id', slotId)

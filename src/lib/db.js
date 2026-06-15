@@ -167,3 +167,13 @@ export async function checkDbHealth() {
     return { ok: true, ms: Date.now() - start }
   } catch { return { ok: false, ms: null } }
 }
+
+/* ── NOTES ── */
+export async function deleteNote(noteId) {
+  const { error } = await supabase.from('notes').delete().eq('id', noteId);
+  if (error) throw error;
+}
+export async function updateNote(noteId, text) {
+  const { error } = await supabase.from('notes').update({ text }).eq('id', noteId);
+  if (error) throw error;
+}

@@ -470,16 +470,17 @@ export default function App() {
     try {
       const slot = slots.find(x => x.id === slotId);
       const counsellorId = slot?.counsellor_id;
-      // Book the slot — sets booked_by = studentId in DB
-      const bookedSlot = await bookSlot(slotId, studentId);
-      setSlots(p => p.map(x => x.id === slotId ? bookedSlot : x));
+      const bookedSlotResult = await bookSlot(slotId, studentId);
+      // Update slots state with booked_by populated
+      setSlots(p => p.map(x => x.id === slotId ? {...bookedSlotResult, booked_by: studentId} : x));
       if (counsellorId && studentId) {
         const cName = memberName(counsellorId);
         const slotDate = slot?.slot_date || "";
         const slotTime = slot?.slot_time || "";
         const stName = students.find(s => s.id === studentId)?.name || "Student";
-        // Assign counsellor + move to counsel stage
         await updStudent(studentId, { assigned_to: counsellorId, stage: "counsel" });
+        // Update local student state too
+        setStudents(p => p.map(s => s.id === studentId ? {...s, assigned_to: counsellorId, stage: "counsel"} : s));
         await doAddNote(studentId, `📅 Counselling booked — ${cName} on ${slotDate} at ${slotTime}`);
         notify(`✓ ${stName} → ${cName} · ${slotDate} at ${slotTime}`);
       } else {
@@ -804,14 +805,14 @@ export default function App() {
                           // Find booked slot: 1) direct booked_by match, 2) most recent booking note
                           let bookedSlot = slots.find(sl=>sl.booked_by===s.id&&sl.status==="booked");
                           if (!bookedSlot) {
-                            // Find the MOST RECENT booking note (sort by created_at desc)
                             const bookingNotes = (s.notes||[])
                               .filter(n=>n.text?.startsWith("📅 Counselling booked"))
                               .sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0));
                             for (const bn of bookingNotes) {
                               const m = bn.text.match(/on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2})/);
                               if (m) {
-                                const sl = slots.find(x=>x.slot_date===m[1]&&x.slot_time===m[2]&&x.counsellor_id===s.assigned_to);
+                                // Match by date+time only (counsellor may not be set yet in local state)
+                                const sl = slots.find(x=>x.slot_date===m[1]&&x.slot_time===m[2]);
                                 if (sl) { bookedSlot = sl; break; }
                               }
                             }
@@ -970,14 +971,13 @@ export default function App() {
                               const findSlotForStudent = (student) => {
                                 const direct = slots.find(sl => sl.booked_by === student.id && sl.status === "booked");
                                 if (direct) return direct;
-                                // Most recent booking note
                                 const bookingNotes = (student.notes||[])
                                   .filter(n => n.text?.startsWith("📅 Counselling booked"))
                                   .sort((a,b) => new Date(b.created_at||0) - new Date(a.created_at||0));
                                 for (const bn of bookingNotes) {
                                   const m = bn.text.match(/on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2})/);
                                   if (m) {
-                                    const sl = slots.find(x => x.slot_date===m[1] && x.slot_time===m[2] && x.counsellor_id===student.assigned_to);
+                                    const sl = slots.find(x => x.slot_date===m[1] && x.slot_time===m[2]);
                                     if (sl) return sl;
                                   }
                                 }

@@ -95,6 +95,7 @@ const fmtDT    = (ts) => new Date(ts).toLocaleString("en-GB",{day:"numeric",mont
 const fmtDate  = (d)  => new Date(d).toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short"});
 const qualColor= (q)  => QUALS.find((x) => x.id===q)?.color || "#64748B";
 const waNum    = (p)  => "https://wa.me/"+String(p||"").replace(/[^0-9]/g,"");
+const telNum   = (p)  => { const n=String(p||"").replace(/[^0-9]/g,""); return n ? (n.startsWith("0")?"+" + n.slice(1) : "+"+n) : ""; };
 const isOverdue= (s)  => s.follow_up && new Date(s.follow_up) < new Date(new Date().toDateString());
 const todayStr = () => {
   const d = new Date();
@@ -569,7 +570,7 @@ export default function App() {
   const openStudent = (id) => { setTab("students"); setSelected(id); setGlobalQ(""); };
 
 
-  if (loading) return <Splash text="Welcome Team"/>;
+  if (loading) return <Splash text="Connecting to database…"/>;
   if (!dbOk) return (
     <div className="min-h-screen flex items-center justify-center p-6" style={{background:T.mist}}>
       <div className="bg-white rounded-2xl p-8 max-w-sm w-full shadow-lg text-center">
@@ -756,7 +757,7 @@ export default function App() {
                         <span className="block text-sm font-semibold truncate">{s.name}</span>
                         <span className={`text-[11px] font-bold ${isOverdue(s)?"text-red-600":"text-slate-400"}`}>{isOverdue(s)?"Overdue — ":""}{s.follow_up}</span>
                       </button>
-                      <a href={`tel:${s.phone}`} className="p-2.5 rounded-xl text-white font-bold" style={{background:T.blue}}><PhoneCall size={15}/></a>
+                      <a href={`tel:${telNum(s.phone)}`} className="p-2.5 rounded-xl text-white font-bold" style={{background:T.blue}}><PhoneCall size={15}/></a>
                       <a href={waNum(s.phone)} target="_blank" rel="noreferrer" className="p-2.5 rounded-xl text-white font-bold" style={{background:"#25D366"}}><MessageCircle size={15}/></a>
                     </div>
                   ))}
@@ -771,7 +772,7 @@ export default function App() {
                         <span className="block text-sm font-semibold truncate hover:underline">{s.name}</span>
                         <span className="block text-[11px] text-slate-400">{stageOf(s.stage).label} · {s.country}</span>
                       </button>
-                      <a href={`tel:${s.phone}`} className="p-2.5 rounded-xl text-white font-bold" style={{background:T.blue}}><PhoneCall size={15}/></a>
+                      <a href={`tel:${telNum(s.phone)}`} className="p-2.5 rounded-xl text-white font-bold" style={{background:T.blue}}><PhoneCall size={15}/></a>
                       <a href={waNum(s.phone)} target="_blank" rel="noreferrer" className="p-2.5 rounded-xl text-white font-bold" style={{background:"#25D366"}}><MessageCircle size={15}/></a>
                     </div>
                   ))}
@@ -800,18 +801,20 @@ export default function App() {
                       <div className="space-y-2 overflow-y-auto flex-1 pr-0.5" style={{scrollbarWidth:"thin",scrollbarColor:"#CBD5E1 transparent"}}>
                         {col.length===0 && <div className="text-[11px] text-slate-400 text-center py-3 rounded-xl border border-dashed" style={{borderColor:"#CBD5E1"}}>Empty</div>}
                         {col.map(s=>{
-                          // Find booked slot via booked_by → notes → counsellor fallback
-                          const direct = slots.find(sl=>sl.booked_by===s.id&&sl.status==="booked");
-                          let bookedSlot = direct;
+                          // Find booked slot: 1) direct booked_by match, 2) most recent booking note
+                          let bookedSlot = slots.find(sl=>sl.booked_by===s.id&&sl.status==="booked");
                           if (!bookedSlot) {
-                            const bn = (s.notes||[]).find(n=>n.text?.startsWith("📅 Counselling booked"));
-                            if (bn) {
+                            // Find the MOST RECENT booking note (sort by created_at desc)
+                            const bookingNotes = (s.notes||[])
+                              .filter(n=>n.text?.startsWith("📅 Counselling booked"))
+                              .sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0));
+                            for (const bn of bookingNotes) {
                               const m = bn.text.match(/on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2})/);
-                              if (m) bookedSlot = slots.find(x=>x.slot_date===m[1]&&x.slot_time===m[2]&&x.status==="booked")||null;
+                              if (m) {
+                                const sl = slots.find(x=>x.slot_date===m[1]&&x.slot_time===m[2]&&x.counsellor_id===s.assigned_to);
+                                if (sl) { bookedSlot = sl; break; }
+                              }
                             }
-                          }
-                          if (!bookedSlot && s.stage==="counsel" && s.assigned_to) {
-                            bookedSlot = slots.find(sl=>sl.counsellor_id===s.assigned_to&&sl.status==="booked")||null;
                           }
                           return (
                           <div key={s.id} className="card lift p-3">
@@ -829,7 +832,7 @@ export default function App() {
                             )}
                             <div className="flex items-center gap-1 mt-2">
                               {(isAdmin||isCounsel||isVisa) && <button onClick={()=>moveStage(s.id,-1)} disabled={stageIdx(s.stage)===0} className="p-1 rounded hover:bg-slate-100 disabled:opacity-20"><ChevronLeft size={13}/></button>}
-                              <a href={`tel:${s.phone}`} className="flex-1 flex justify-center p-2 rounded-lg text-white font-bold" style={{background:T.blue}}><PhoneCall size={14}/></a>
+                              <a href={`tel:${telNum(s.phone)}`} className="flex-1 flex justify-center p-2 rounded-lg text-white font-bold" style={{background:T.blue}}><PhoneCall size={14}/></a>
                               <a href={waNum(s.phone)} target="_blank" rel="noreferrer" className="p-2 rounded-lg text-white font-bold" style={{background:"#25D366"}}><MessageCircle size={14}/></a>
                               {(isAdmin||isCounsel||isVisa) && <button onClick={()=>moveStage(s.id,1)} disabled={stageIdx(s.stage)===STAGES.length-1} className="p-1 rounded hover:bg-slate-100 disabled:opacity-20" style={{color:T.blue}}><ChevronRight size={13}/></button>}
                             </div>
@@ -963,23 +966,20 @@ export default function App() {
                                 : outcome.includes("WhatsApp") ? "WhatsApp"
                                 : outcome?.slice(0,14)||"Called";
 
-                              // Find booked slot: 1) by booked_by field, 2) by notes date+time match, 3) by counsellor+stage
+                              // Find booked slot: 1) direct booked_by, 2) most recent booking note
                               const findSlotForStudent = (student) => {
-                                // Best: direct booked_by match
                                 const direct = slots.find(sl => sl.booked_by === student.id && sl.status === "booked");
                                 if (direct) return direct;
-                                // Fallback: find slot date+time from student's booking note
-                                const bookingNote = (student.notes||[]).find(n => n.text?.startsWith("📅 Counselling booked"));
-                                if (bookingNote) {
-                                  const m = bookingNote.text.match(/on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2})/);
+                                // Most recent booking note
+                                const bookingNotes = (student.notes||[])
+                                  .filter(n => n.text?.startsWith("📅 Counselling booked"))
+                                  .sort((a,b) => new Date(b.created_at||0) - new Date(a.created_at||0));
+                                for (const bn of bookingNotes) {
+                                  const m = bn.text.match(/on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2})/);
                                   if (m) {
-                                    const sl = slots.find(x => x.slot_date === m[1] && x.slot_time === m[2] && x.status === "booked");
+                                    const sl = slots.find(x => x.slot_date===m[1] && x.slot_time===m[2] && x.counsellor_id===student.assigned_to);
                                     if (sl) return sl;
                                   }
-                                }
-                                // Last resort: counsellor match for counsel stage
-                                if (student.stage === "counsel" && student.assigned_to) {
-                                  return slots.find(sl => sl.counsellor_id === student.assigned_to && sl.status === "booked") || null;
                                 }
                                 return null;
                               };
@@ -1007,7 +1007,7 @@ export default function App() {
                           </td>
                           <td className="p-3" onClick={e=>e.stopPropagation()}>
                             <div className="flex gap-1">
-                              <a href={`tel:${s.phone}`} className="p-2.5 rounded-xl text-white font-bold" style={{background:T.blue}} title="Call"><PhoneCall size={15}/></a>
+                              <a href={`tel:${telNum(s.phone)}`} className="p-2.5 rounded-xl text-white font-bold" style={{background:T.blue}} title="Call"><PhoneCall size={15}/></a>
                               <a href={waNum(s.phone)} target="_blank" rel="noreferrer" className="p-2.5 rounded-xl text-white font-bold" style={{background:"#25D366"}} title="WhatsApp"><MessageCircle size={15}/></a>
                               {isAdmin && <button onClick={()=>{if(window.confirm(`Delete ${s.name}?`))doDeleteStudent(s.id);}} className="p-2.5 rounded-xl hover:bg-red-50 text-slate-300 hover:text-red-500" title="Delete"><Trash2 size={15}/></button>}
                             </div>
@@ -1030,7 +1030,7 @@ export default function App() {
               slots={slots}
               onBack={()=>setSelected(null)} onUpdate={updStudent} onMove={moveStage}
               onAssignBDE={assignToBDE} onAssignCounsellor={assignCounsellor}
-              onAddNote={doAddNote} onDeleteNote={doDeleteNote} onUpdateNote={doUpdateNote} onBookSlot={doBookSlot}
+              onAddNote={doAddNote} onDeleteNote={doDeleteNote} onUpdateNote={doUpdateNote} onBookSlot={doBookSlot} onFreeSlot={doFreeSlot}
               onDeleteStudent={doDeleteStudent}
               onAddApp={doAddApp} onUpdateApp={doUpdateApp} onDeleteApp={doDeleteApp}
               onCycleDoc={doCycleDoc} onAddDoc={doAddDoc} onDeleteDoc={doDeleteDoc}
@@ -1968,7 +1968,7 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
 
 
 /* ════ STUDENT DETAIL ════ */
-function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmin, isBDE, isCounsel, isVisa, slots, onBack, onUpdate, onMove, onAssignBDE, onAssignCounsellor, onAddNote, onDeleteNote, onUpdateNote, onBookSlot, onDeleteStudent, onAddApp, onUpdateApp, onDeleteApp, onCycleDoc, onAddDoc, onDeleteDoc }) {
+function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmin, isBDE, isCounsel, isVisa, slots, onBack, onUpdate, onMove, onAssignBDE, onAssignCounsellor, onAddNote, onDeleteNote, onUpdateNote, onBookSlot, onFreeSlot, onDeleteStudent, onAddApp, onUpdateApp, onDeleteApp, onCycleDoc, onAddDoc, onDeleteDoc }) {
   const initTab = isBDE?"calls":isCounsel?"session":"overview";
   const [ptab,setPtab]       = useState(initTab);
   const [noteText,setNoteText] = useState("");
@@ -2017,7 +2017,10 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
     if (sessionForm.outcome) text+=`\nOutcome: ${sessionForm.outcome}`;
     if (sessionForm.notes) text+=`\nNotes: ${sessionForm.notes}`;
     if (sessionForm.meetLink) text+=`\nLink: ${sessionForm.meetLink}`;
-    onAddNote(s.id,text);
+    onAddNote(s.id, text);
+    // Auto-free the booked slot for this student
+    const bookedSlot = slots.find(sl => sl.booked_by === s.id && sl.status === "booked");
+    if (bookedSlot && onFreeSlot) onFreeSlot(bookedSlot.id);
     setShowSessionModal(false);
   };
 
@@ -2065,7 +2068,7 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
 
             {/* Big action buttons — phone & PC friendly */}
             <div className="flex flex-wrap gap-2 mt-4">
-              <a href={`tel:${s.phone}`} className="call-btn" style={{background:T.blue,color:"#fff"}}><PhoneCall size={16}/> Call</a>
+              <a href={`tel:${telNum(s.phone)}`} className="call-btn" style={{background:T.blue,color:"#fff"}}><PhoneCall size={16}/> Call</a>
               <a href={`https://wa.me/${String(s.phone||"").replace(/[^0-9]/g,"")}`} target="_blank" rel="noreferrer" className="call-btn" style={{background:"#25D366",color:"#fff"}}><MessageCircle size={16}/> WhatsApp</a>
               {(isBDE||isAdmin) && <button onClick={()=>setShowCallModal(true)} className="call-btn" style={{background:T.saffron,color:"#fff"}}><PhoneCall size={16}/> Log call</button>}
               {(isCounsel||isAdmin) && <button onClick={()=>setShowSessionModal(true)} className="call-btn" style={{background:T.purple,color:"#fff"}}><Video size={16}/> Log session</button>}
@@ -2233,7 +2236,7 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
           </div>
           {/* Big tap-friendly call buttons */}
           <div className="grid grid-cols-2 gap-3 mb-5">
-            <a href={`tel:${s.phone}`} className="call-btn" style={{background:T.blue,color:"#fff"}}><PhoneCall size={18}/> Call now</a>
+            <a href={`tel:${telNum(s.phone)}`} className="call-btn" style={{background:T.blue,color:"#fff"}}><PhoneCall size={18}/> Call now</a>
             <a href={`https://wa.me/${String(s.phone||"").replace(/[^0-9]/g,"")}`} target="_blank" rel="noreferrer" className="call-btn" style={{background:"#25D366",color:"#fff"}}><MessageCircle size={18}/> WhatsApp</a>
           </div>
           {/* Available slots for BDE to book */}

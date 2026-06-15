@@ -815,6 +815,7 @@ export default function App() {
                         {col.map(s=>{
                           // Find booked slot: 1) direct booked_by match, 2) most recent booking note
                           let bookedSlot = slots.find(sl=>sl.booked_by===s.id&&sl.status==="booked");
+                          let noteBooking = null; // { date, time } parsed from note as a fallback
                           if (!bookedSlot) {
                             const bookingNotes = (s.notes||[])
                               .filter(n=>n.text?.startsWith("📅 Counselling booked"))
@@ -825,9 +826,11 @@ export default function App() {
                                 // Match by date+time only (counsellor may not be set yet in local state)
                                 const sl = slots.find(x=>x.slot_date===m[1]&&x.slot_time===m[2]);
                                 if (sl) { bookedSlot = sl; break; }
+                                if (!noteBooking) noteBooking = { slot_date: m[1], slot_time: m[2] };
                               }
                             }
                           }
+                          const bk = bookedSlot || noteBooking;
                           return (
                           <div key={s.id} className="card lift p-3">
                             <div className="flex items-center gap-1.5">
@@ -835,10 +838,10 @@ export default function App() {
                               {s.qualification && <span className="w-2 h-2 rounded-full shrink-0" style={{background:qualColor(s.qualification)}}/>}
                             </div>
                             <div className="text-[11px] text-slate-500">{memberName(s.assigned_to)||"Unassigned"}</div>
-                            {bookedSlot && (
+                            {bk && (
                               <div className="mt-1 flex items-center gap-1">
                                 <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-lg num" style={{background:"#CCFBF1",color:"#0D9488"}}>
-                                  📅 {new Date(bookedSlot.slot_date).toLocaleDateString("en-GB",{day:"numeric",month:"short"})} · {bookedSlot.slot_time}
+                                  📅 {new Date(bk.slot_date).toLocaleDateString("en-GB",{day:"numeric",month:"short"})} · {bk.slot_time}
                                 </span>
                               </div>
                             )}
@@ -1706,11 +1709,12 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
                     const isPicked=bdePickedSlot?.time===time;
                     if(isBooked){
                       const bookedSt=students.find(s=>s.id===existing.booked_by);
+                      const bookedName = bookedSt?.name || existing.student?.name || "Student";
                       return(
                         <div key={time} className="rounded-xl border-2 p-2.5 text-center" style={{borderColor:"#FECACA",background:"#FEF2F2"}}>
                           <div className="text-sm font-extrabold text-red-500">{time}</div>
                           <div className="text-[9px] font-bold text-red-400 mt-0.5">Booked</div>
-                          <div className="text-[9px] text-red-400 truncate mt-0.5">{bookedSt?.name||"Student"}</div>
+                          <div className="text-[9px] text-red-400 truncate mt-0.5" title={bookedName}>{bookedName}</div>
                         </div>
                       );
                     }
@@ -1857,7 +1861,7 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
             {SLOT_TIMES.map(time=>{
               const { type, slot } = getSlotStatus(c.id, selDate, time);
               const label = SLOT_LABELS[time];
-              const bookedStudentName = slot?.booked_by ? studentName(slot.booked_by) : "";
+              const bookedStudentName = slot?.booked_by ? (studentName(slot.booked_by) || slot?.student?.name || "") : "";
               return (
                 <div key={time} className="rounded-xl border-2 p-2 text-center transition"
                   style={{

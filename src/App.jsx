@@ -132,6 +132,7 @@ export default function App() {
   const [showAddTeam,setShowAddTeam]   = useState(false);
   const [showSettings,setShowSettings] = useState(false);
   const [showExport,setShowExport]     = useState(false);
+  const [exportStage,setExportStage]   = useState("all");
   const [showImport,setShowImport]     = useState(false);
   const [showAddSlot,setShowAddSlot]   = useState(false);
   const [showDb,setShowDb]       = useState(false);
@@ -516,7 +517,18 @@ export default function App() {
     }
   };
 
-  const exportRows = () => students.map(s=>({ Date:new Date(s.created_at||Date.now()).toLocaleDateString("en-GB"),Name:s.name,Phone:s.phone,Email:s.email||"",Qualification:s.qualification||"",Level:s.level,Country:s.country,Intake:s.intake,"Field":s.field,Stage:stageOf(s.stage).label,"BDE":memberName(s.bde_id),"Counsellor":memberName(s.assigned_to),"Follow Up":s.follow_up||"" }));
+  const exportRows = () => {
+    const rows = exportStage==="all" ? students : students.filter(s=>s.stage===exportStage);
+    return rows.map(s=>({
+      Date: new Date(s.created_at||Date.now()).toLocaleDateString("en-GB"),
+      Name: s.name, Phone: s.phone, Email: s.email||"",
+      Qualification: s.qualification||"", Level: s.level,
+      Country: s.country, Intake: s.intake, Field: s.field,
+      Stage: stageOf(s.stage).label,
+      BDE: memberName(s.bde_id), Counsellor: memberName(s.assigned_to),
+      "Follow Up": s.follow_up||""
+    }));
+  };
   const doExport = (type) => {
     if (security.exportPass) {
       if (!exportPass) { setShowExportPass(true); return; }
@@ -1093,8 +1105,25 @@ export default function App() {
               </div>
             </div>
           ) : (
-            <div className="space-y-2">
-              <ModalBtn icon={<FileSpreadsheet size={18} style={{color:T.ok}}/>} title="Download Excel (.xlsx)" sub={`${students.length} students`} onClick={()=>doExport("excel")}/>
+            <div className="space-y-3">
+              {/* Stage filter */}
+              <div>
+                <label className="text-xs font-semibold text-slate-500 block mb-1">Filter by stage</label>
+                <select value={exportStage} onChange={e=>setExportStage(e.target.value)} style={inp}>
+                  <option value="all">All stages ({students.length} students)</option>
+                  {STAGES.map(st=>{
+                    const count = students.filter(s=>s.stage===st.id).length;
+                    return <option key={st.id} value={st.id}>{st.label} ({count})</option>;
+                  })}
+                </select>
+              </div>
+              <div className="text-xs font-semibold text-slate-500 px-1">
+                Exporting: <span className="font-bold" style={{color:T.blue}}>
+                  {exportStage==="all" ? students.length : students.filter(s=>s.stage===exportStage).length} students
+                </span>
+                {exportStage!=="all" && <span className="ml-1 text-slate-400">({stageOf(exportStage).label})</span>}
+              </div>
+              <ModalBtn icon={<FileSpreadsheet size={18} style={{color:T.ok}}/>} title="Download Excel (.xlsx)" sub="Full data with all columns" onClick={()=>doExport("excel")}/>
               <ModalBtn icon={<Download size={18} style={{color:T.blue}}/>} title="Download CSV" sub="Import into Google Sheets" onClick={()=>doExport("csv")}/>
               <ModalBtn icon={<Send size={18} style={{color:T.saffron}}/>} title="Send to Google Sheets" sub={webhookUrl?"Push all leads":"Set URL in Settings first"} onClick={sendToSheet}/>
             </div>

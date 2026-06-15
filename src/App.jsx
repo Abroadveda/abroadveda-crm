@@ -569,7 +569,7 @@ export default function App() {
   const openStudent = (id) => { setTab("students"); setSelected(id); setGlobalQ(""); };
 
 
-  if (loading) return <Splash text="Connecting to database…"/>;
+  if (loading) return <Splash text="Welcome Team"/>;
   if (!dbOk) return (
     <div className="min-h-screen flex items-center justify-center p-6" style={{background:T.mist}}>
       <div className="bg-white rounded-2xl p-8 max-w-sm w-full shadow-lg text-center">
@@ -2006,7 +2006,7 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
     onAddNote(s.id,text);
     // Auto-move stage based on outcome
     const targetStage = OUTCOME_STAGE[callForm.outcome];
-    if (targetStage && s.stage === "lead") {
+    if (targetStage && s.stage !== targetStage) {
       onUpdate(s.id, {stage: targetStage});
     }
     setCallForm({outcome:CALL_OUTCOMES[0],notes:"",date:"",time:"",enrolledCountry:"",enrolledIntake:""});
@@ -2193,9 +2193,9 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
             )}
             <label className="block text-xs font-semibold text-slate-500">Notes<textarea value={callForm.notes} onChange={e=>setCallForm({...callForm,notes:e.target.value})} placeholder="Key points…" rows={3} style={{...inp,resize:"vertical"}}/></label>
             {/* Auto-move notice */}
-            {OUTCOME_STAGE[callForm.outcome] && s.stage==="lead" && (
+            {OUTCOME_STAGE[callForm.outcome] && s.stage !== OUTCOME_STAGE[callForm.outcome] && (
               <div className="text-[11px] px-3 py-2 rounded-lg font-semibold" style={{background:"#FEF9C3",color:"#92400E"}}>
-                ⚡ Student will auto-move to <b>{stageOf(OUTCOME_STAGE[callForm.outcome]).label}</b>
+                ⚡ Student will move: <b>{stageOf(s.stage).label}</b> → <b>{stageOf(OUTCOME_STAGE[callForm.outcome]).label}</b>
               </div>
             )}
           </div>

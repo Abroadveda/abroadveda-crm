@@ -107,23 +107,29 @@ export async function deleteTeamMember(id) {
 }
 
 /* ── SLOTS ── */
+const SLOT_SELECT = '*, student:students!booked_by(id,name)'
 export async function getSlots() {
-  const { data, error } = await supabase.from('counselling_slots').select('*').order('slot_date').order('slot_time')
-  if (error) return []
+  // Try with FK join first so each booked slot carries the student's name
+  let { data, error } = await supabase.from('counselling_slots').select(SLOT_SELECT).order('slot_date').order('slot_time')
+  if (error) {
+    // Fallback if FK relationship isn't recognised by PostgREST
+    const r = await supabase.from('counselling_slots').select('*').order('slot_date').order('slot_time')
+    return r.data || []
+  }
   return data || []
 }
 export async function createSlot(slot) {
-  const { data, error } = await supabase.from('counselling_slots').insert([slot]).select().single()
+  const { data, error } = await supabase.from('counselling_slots').insert([slot]).select(SLOT_SELECT).single()
   if (error) throw error
   return data
 }
 export async function bookSlot(slotId, studentId) {
-  const { data, error } = await supabase.from('counselling_slots').update({ booked_by: studentId, status: 'booked' }).eq('id', slotId).select().single()
+  const { data, error } = await supabase.from('counselling_slots').update({ booked_by: studentId, status: 'booked' }).eq('id', slotId).select(SLOT_SELECT).single()
   if (error) throw error
   return data
 }
 export async function freeSlot(slotId) {
-  const { data, error } = await supabase.from('counselling_slots').update({ booked_by: null, status: 'available' }).eq('id', slotId).select().single()
+  const { data, error } = await supabase.from('counselling_slots').update({ booked_by: null, status: 'available' }).eq('id', slotId).select(SLOT_SELECT).single()
   if (error) throw error
   return data
 }

@@ -40,7 +40,8 @@ const STAGES = [
   { id:"visa",         label:"Visa Filing",            color:"#EF4444" },
   { id:"predep",       label:"Pre-Departure",          color:"#10B981" },
   { id:"departed",     label:"Departed 🎉",            color:"#16A34A" },
-  { id:"enrolled",     label:"Already Enrolled",       color:"#8B5CF6" },
+  { id:"future",       label:"Planning for Future",    color:"#8B5CF6" },
+  { id:"enrolled",     label:"Already Enrolled",       color:"#14B8A6" },
   { id:"notinterested",label:"Cancelled",              color:"#DC2626" },
 ];
 const COUNTRIES    = ["UK","Ireland","Germany","Australia","New Zealand","Canada","USA","Europe"];
@@ -67,9 +68,14 @@ const FIN_SOURCES  = ["Parents","Self-funded","Education Loan","Scholarship","Sp
 const CALL_OUTCOMES = [
   "No answer — callback later",
   "Busy — try again",
+  "Switch off",
+  "Not reachable",
+  "Call back later",
   "Wrong number",
+  "Invalid number",
   "Not interested",
   "Interested — follow-up needed",
+  "Planning for future",
   "Counselling booked",
   "Already Enrolled",
   "WhatsApp message sent",
@@ -77,12 +83,17 @@ const CALL_OUTCOMES = [
 
 // Which call outcomes auto-move the student to which stage
 const OUTCOME_STAGE = {
-  "Wrong number":               "notinterested",
-  "Not interested":             "notinterested",
-  "No answer — callback later": "processing",
-  "Busy — try again":           "processing",
+  "Wrong number":                "notinterested",
+  "Invalid number":              "notinterested",
+  "Not interested":              "notinterested",
+  "No answer — callback later":  "processing",
+  "Busy — try again":            "processing",
+  "Switch off":                  "processing",
+  "Not reachable":               "processing",
+  "Call back later":             "processing",
   "Interested — follow-up needed": "processing",
-  "Already Enrolled":           "enrolled",
+  "Planning for future":         "future",
+  "Already Enrolled":            "enrolled",
 };
 const MEET_TYPES = ["Google Meet","Zoom","Microsoft Teams","Phone call","In-person"];
 const SLOT_TIMES = ["11:00","12:00","13:00","14:00","15:00","16:00","17:00"];

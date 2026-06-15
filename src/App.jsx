@@ -29,15 +29,18 @@ const ROLE_META = {
 const ALL_MEMBER_ROLES = ["BDE","Counsellor","Visa Officer"];
 
 const STAGES = [
-  { id:"lead",      label:"New Lead",             color:"#64748B" },
-  { id:"counsel",   label:"Counselling",           color:"#0d6efd" },
-  { id:"shortlist", label:"Shortlisting",          color:"#6366F1" },
-  { id:"applied",   label:"Application",           color:"#8B5CF6" },
-  { id:"offer",     label:"Offer Received",        color:"#F59E0B" },
-  { id:"finance",   label:"Finance & Scholarship", color:"#14B8A6" },
-  { id:"visa",      label:"Visa Filing",           color:"#EF4444" },
-  { id:"predep",    label:"Pre-Departure",         color:"#10B981" },
-  { id:"departed",  label:"Departed 🎉",           color:"#16A34A" },
+  { id:"lead",        label:"New Lead",               color:"#64748B" },
+  { id:"notinterested",label:"Not Interested",        color:"#DC2626" },
+  { id:"processing",  label:"Processing",             color:"#F59E0B" },
+  { id:"enrolled",    label:"Already Enrolled",       color:"#8B5CF6" },
+  { id:"counsel",     label:"Counselling",            color:"#0d6efd" },
+  { id:"shortlist",   label:"Shortlisting",           color:"#6366F1" },
+  { id:"applied",     label:"Application",            color:"#8B5CF6" },
+  { id:"offer",       label:"Offer Received",         color:"#F59E0B" },
+  { id:"finance",     label:"Finance & Scholarship",  color:"#14B8A6" },
+  { id:"visa",        label:"Visa Filing",            color:"#EF4444" },
+  { id:"predep",      label:"Pre-Departure",          color:"#10B981" },
+  { id:"departed",    label:"Departed 🎉",            color:"#16A34A" },
 ];
 const COUNTRIES    = ["UK","Ireland","Germany","Australia","New Zealand","Canada","USA","Europe"];
 const INTAKES      = ["January","May","September","Other"];
@@ -60,7 +63,26 @@ const DOC_FIELDS = {
 };
 const HEAR_SOURCES = ["School/College Visit","Friend or Family","Social Media","Website","Walk-in","Education Fair","Other"];
 const FIN_SOURCES  = ["Parents","Self-funded","Education Loan","Scholarship","Sponsor"];
-const CALL_OUTCOMES = ["Not reachable","No answer — callback later","Busy — try again","Wrong number","Not interested","Interested — follow-up needed","Counselling booked","WhatsApp message sent"];
+const CALL_OUTCOMES = [
+  "No answer — callback later",
+  "Busy — try again",
+  "Wrong number",
+  "Not interested",
+  "Interested — follow-up needed",
+  "Counselling booked",
+  "Already Enrolled",
+  "WhatsApp message sent",
+];
+
+// Which call outcomes auto-move the student to which stage
+const OUTCOME_STAGE = {
+  "Wrong number":               "notinterested",
+  "Not interested":             "notinterested",
+  "No answer — callback later": "processing",
+  "Busy — try again":           "processing",
+  "Interested — follow-up needed": "processing",
+  "Already Enrolled":           "enrolled",
+};
 const MEET_TYPES = ["Google Meet","Zoom","Microsoft Teams","Phone call","In-person"];
 const SLOT_TIMES = ["11:00","12:00","13:00","14:00","15:00","16:00","17:00"];
 const SLOT_LABELS = {"11:00":"11 AM – 12 PM","12:00":"12 PM – 1 PM","13:00":"1 PM – 2 PM","14:00":"2 PM – 3 PM","15:00":"3 PM – 4 PM","16:00":"4 PM – 5 PM","17:00":"5 PM – 6 PM"};
@@ -520,7 +542,7 @@ export default function App() {
   const openStudent = (id) => { setTab("students"); setSelected(id); setGlobalQ(""); };
 
 
-  if (loading) return <Splash text="Welcome to Abroadveda"/>;
+  if (loading) return <Splash text="Connecting to database…"/>;
   if (!dbOk) return (
     <div className="min-h-screen flex items-center justify-center p-6" style={{background:T.mist}}>
       <div className="bg-white rounded-2xl p-8 max-w-sm w-full shadow-lg text-center">
@@ -738,17 +760,17 @@ export default function App() {
           {tab==="pipeline" && (
             <div>
               <h1 className="text-xl font-extrabold mb-4">Application pipeline</h1>
-              <div className="flex gap-3 overflow-x-auto pb-4">
+              <div className="flex gap-3 overflow-x-auto overflow-y-hidden pb-4" style={{scrollbarWidth:"thin",scrollbarColor:"#CBD5E1 transparent"}}>
                 {STAGES.map(st=>{
                   const col=visibleStudents.filter(s=>s.stage===st.id);
                   return (
-                    <div key={st.id} className="w-60 shrink-0 rounded-2xl p-3" style={{background:"#ECF1F9"}}>
-                      <div className="flex items-center gap-2 mb-3 px-1">
+                    <div key={st.id} className="w-60 shrink-0 rounded-2xl p-3 flex flex-col" style={{background:"#ECF1F9",maxHeight:"calc(100vh - 180px)"}}>
+                      <div className="flex items-center gap-2 mb-3 px-1 shrink-0">
                         <span className="w-2.5 h-2.5 rounded-full" style={{background:st.color}}/>
                         <span className="text-xs font-bold">{st.label}</span>
                         <span className="ml-auto text-[10px] font-bold text-slate-500 bg-white rounded-full px-2 py-0.5 num">{col.length}</span>
                       </div>
-                      <div className="space-y-2 min-h-[40px]">
+                      <div className="space-y-2 overflow-y-auto flex-1 pr-0.5" style={{scrollbarWidth:"thin",scrollbarColor:"#CBD5E1 transparent"}}>
                         {col.length===0 && <div className="text-[11px] text-slate-400 text-center py-3 rounded-xl border border-dashed" style={{borderColor:"#CBD5E1"}}>Empty</div>}
                         {col.map(s=>{
                           // Find booked slot via booked_by → notes → counsellor fallback
@@ -1910,7 +1932,7 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
   const [appForm,setAppForm] = useState({course:"",institution:"",commence_date:"",status:"Application Preparation"});
   const [showCallModal,setShowCallModal]   = useState(false);
   const [showSessionModal,setShowSessionModal] = useState(false);
-  const [callForm,setCallForm]   = useState({outcome:CALL_OUTCOMES[0],notes:"",date:"",time:""});
+  const [callForm,setCallForm]   = useState({outcome:CALL_OUTCOMES[0],notes:"",date:"",time:"",enrolledCountry:"",enrolledIntake:""});
   const [sessionForm,setSessionForm] = useState({platform:MEET_TYPES[0],duration:"30 mins",outcome:"",notes:"",meetLink:""});
 
   const st   = stageOf(s.stage);
@@ -1929,12 +1951,21 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
     let text=`📞 CALL — ${callForm.outcome}`;
     if (callForm.notes) text+=`\nNotes: ${callForm.notes}`;
     if (callForm.date&&callForm.time) text+=`\nCallback: ${callForm.date} at ${callForm.time}`;
+    if (callForm.outcome==="Already Enrolled") {
+      if (callForm.enrolledCountry) text+=`\nEnrolled Country: ${callForm.enrolledCountry}`;
+      if (callForm.enrolledIntake) text+=`\nEnrolled Intake: ${callForm.enrolledIntake}`;
+    }
     if (callForm.outcome.includes("Counselling")&&callForm.bookedSlot) {
       text+=`\nCounselling booked`;
       await onBookSlot(callForm.bookedSlot, s.id);
     }
     onAddNote(s.id,text);
-    setCallForm({outcome:CALL_OUTCOMES[0],notes:"",date:"",time:""});
+    // Auto-move stage based on outcome
+    const targetStage = OUTCOME_STAGE[callForm.outcome];
+    if (targetStage && s.stage === "lead") {
+      onUpdate(s.id, {stage: targetStage});
+    }
+    setCallForm({outcome:CALL_OUTCOMES[0],notes:"",date:"",time:"",enrolledCountry:"",enrolledIntake:""});
     setShowCallModal(false);
   };
   const saveSessionLog = () => {
@@ -2084,9 +2115,27 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
                 {CALL_OUTCOMES.map(o=><option key={o}>{o}</option>)}
               </select>
             </label>
-            {(callForm.outcome.includes("callback")||callForm.outcome.includes("Counselling")) && (
+            {/* Already Enrolled fields */}
+            {callForm.outcome==="Already Enrolled" && (
+              <div className="grid grid-cols-2 gap-3 p-3 rounded-xl" style={{background:"#F3E8FF"}}>
+                <label className="block text-xs font-semibold text-slate-600">Enrolled Country
+                  <select value={callForm.enrolledCountry} onChange={e=>setCallForm({...callForm,enrolledCountry:e.target.value})} style={inp}>
+                    <option value="">Select…</option>
+                    {COUNTRIES.map(c=><option key={c}>{c}</option>)}
+                  </select>
+                </label>
+                <label className="block text-xs font-semibold text-slate-600">Enrolled Intake
+                  <select value={callForm.enrolledIntake} onChange={e=>setCallForm({...callForm,enrolledIntake:e.target.value})} style={inp}>
+                    <option value="">Select…</option>
+                    {INTAKES.map(i=><option key={i}>{i}</option>)}
+                  </select>
+                </label>
+              </div>
+            )}
+            {/* Callback date for callback/counselling/processing outcomes */}
+            {(callForm.outcome.includes("callback")||callForm.outcome.includes("Counselling")||callForm.outcome.includes("Busy")||callForm.outcome.includes("follow-up")) && (
               <div className="grid grid-cols-2 gap-3">
-                <label className="block text-xs font-semibold text-slate-500">Date<input type="date" value={callForm.date} onChange={e=>setCallForm({...callForm,date:e.target.value})} style={inp} min={todayStr()}/></label>
+                <label className="block text-xs font-semibold text-slate-500">Callback Date<input type="date" value={callForm.date} onChange={e=>setCallForm({...callForm,date:e.target.value})} style={inp} min={todayStr()}/></label>
                 <label className="block text-xs font-semibold text-slate-500">Time<select value={callForm.time} onChange={e=>setCallForm({...callForm,time:e.target.value})} style={inp}><option value="">Select…</option>{SLOT_TIMES.map(t=><option key={t}>{t}</option>)}</select></label>
               </div>
             )}
@@ -2099,6 +2148,12 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
               </label>
             )}
             <label className="block text-xs font-semibold text-slate-500">Notes<textarea value={callForm.notes} onChange={e=>setCallForm({...callForm,notes:e.target.value})} placeholder="Key points…" rows={3} style={{...inp,resize:"vertical"}}/></label>
+            {/* Auto-move notice */}
+            {OUTCOME_STAGE[callForm.outcome] && s.stage==="lead" && (
+              <div className="text-[11px] px-3 py-2 rounded-lg font-semibold" style={{background:"#FEF9C3",color:"#92400E"}}>
+                ⚡ Student will auto-move to <b>{stageOf(OUTCOME_STAGE[callForm.outcome]).label}</b>
+              </div>
+            )}
           </div>
           <button onClick={saveCallLog} className="mt-4 w-full py-2.5 rounded-xl text-white font-semibold text-sm" style={{background:T.blue}}>Save call log</button>
         </Modal>

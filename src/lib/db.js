@@ -18,7 +18,9 @@ export async function getStudents() {
     if (data.length < PAGE) break   // last page
     from += PAGE
   }
-  return allData
+  // Deduplicate by id in case pagination boundary splits students with same created_at
+  const seen = new Set()
+  return allData.filter(s => seen.has(s.id) ? false : seen.add(s.id))
 }
 export async function createStudent(s) {
   const allowed = ['name','phone','email','level','country','intake','field','stage','qualification','assigned_to','bde_id','follow_up','gender','dob','nationality','city','consent_tc','consent_mkt','hear_source','fin_source']

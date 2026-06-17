@@ -32,8 +32,9 @@ const ROLE_META = {
   BDE:           { color:"#14B8A6", badge:"#CCFBF1", tx:"#134E4A" },
   Counsellor:    { color:"#0d6efd", badge:"#DBEAFE", tx:"#1E40AF" },
   "Visa Officer":{ color:"#EF4444", badge:"#FEE2E2", tx:"#991B1B" },
+  Manager:       { color:"#8B5CF6", badge:"#EDE9FE", tx:"#5B21B6" },
 };
-const ALL_MEMBER_ROLES = ["BDE","Counsellor","Visa Officer"];
+const ALL_MEMBER_ROLES = ["BDE","Counsellor","Visa Officer","Manager"];
 
 const STAGES = [
   { id:"lead",         label:"New Lead",               color:"#64748B" },
@@ -111,9 +112,18 @@ const fmtDT    = (ts) => new Date(ts).toLocaleString("en-GB",{day:"numeric",mont
 const fmtDate  = (d)  => new Date(d).toLocaleDateString("en-GB",{weekday:"short",day:"numeric",month:"short"});
 const qualColor= (q)  => QUALS.find((x) => x.id===q)?.color || "#64748B";
 const isOverdue= (s)  => s.follow_up && new Date(s.follow_up) < new Date(new Date().toDateString());
+// Always compute dates in IST (UTC+5:30) regardless of user's local timezone
+const toIST = () => {
+  const now = new Date();
+  return new Date(now.getTime() + (now.getTimezoneOffset() + 330) * 60000);
+};
 const todayStr = () => {
-  const d = new Date();
+  const d = toIST();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+};
+const currentISTHour = () => {
+  const d = toIST();
+  return `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
 };
 const inp      = { width:"100%", padding:"9px 12px", borderRadius:12, border:"1px solid #CBD5E1", fontSize:14, background:"#fff", marginTop:4, fontWeight:500 };
 
@@ -132,8 +142,10 @@ export default function App() {
   const [loading,setLoading]     = useState(true);
   const [dbOk,setDbOk]           = useState(true);
   const [syncing,setSyncing]     = useState(false);
-  const [currentUser,setCurrentUser] = useState(null);
-  const [activeRole,setActiveRole]   = useState(null);
+  const [currentUser,setCurrentUser] = useState(() => {
+    try { const u = localStorage.getItem("crm_user"); return u ? JSON.parse(u) : null; } catch { return null; }
+  });
+  const [activeRole,setActiveRole] = useState(() => localStorage.getItem("crm_role") || null);
   const [query,setQuery]         = useState("");
   const [globalQ,setGlobalQ]     = useState("");
   const [filterStage,setFilterStage]     = useState("all");
@@ -151,6 +163,8 @@ export default function App() {
   const [showImport,setShowImport]     = useState(false);
   const [showAddSlot,setShowAddSlot]   = useState(false);
   const [pendingBooking,setPendingBooking] = useState(null); // {counsellorId, studentId} — pre-fills Slots booking flow
+  const [pipeSelStage,setPipeSelStage]   = useState(null); // stageId of column in select mode
+  const [pipeSelected,setPipeSelected]   = useState(new Set()); // student IDs selected in pipeline
   const [showDb,setShowDb]       = useState(false);
   const [exportPass,setExportPass]     = useState("");
   const [showExportPass,setShowExportPass] = useState(false);
@@ -160,6 +174,18 @@ export default function App() {
   const [dbHealth,setDbHealth]   = useState(null);
 
   const notify = (msg) => { setToast(msg); setTimeout(()=>setToast(""),3500); };
+
+  const [showSlotPicker, setShowSlotPicker] = useState(false);
+  const [spCounsellorId, setSpCounsellorId] = useState("");
+  const [spStudentId, setSpStudentId]       = useState(null);
+  const [spDate, setSpDate]                 = useState(todayStr());
+
+  const closeAllModals = () => {
+    setShowAdd(false); setShowAddTeam(false); setShowSettings(false);
+    setShowExport(false); setShowImport(false); setShowAddSlot(false);
+    setShowDb(false); setShowExportPass(false); setShowSlotPicker(false);
+  };
+  const goTab = (t) => { closeAllModals(); setTab(t); setSelected(null); setSelLeads(new Set()); };
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -183,19 +209,21 @@ export default function App() {
   const isBDE     = role === "BDE";
   const isCounsel = role === "Counsellor";
   const isVisa    = role === "Visa Officer";
+  const isManager = role === "Manager";
 
-  const counsellors = team.filter(t => hasRole(t,"Counsellor"));
+  // Managers also count as counsellors — they appear in assignment dropdowns and slot scheduling
+  const counsellors = team.filter(t => hasRole(t,"Counsellor") || hasRole(t,"Manager"));
   const bdeList     = team.filter(t => hasRole(t,"BDE"));
 
   const visibleStudents = useMemo(() => {
-    if (!currentUser || isAdmin) return students;
+    if (!currentUser || isAdmin || isManager) return students;
     // BDE sees ALL students where they are the BDE (bde_id) — at every stage
     // This means BDE can track their students through the entire journey
     if (isBDE) return students.filter(s => s.bde_id === currentUser.id);
     if (isCounsel) return students.filter(s => s.assigned_to===currentUser.id);
     if (isVisa) return students.filter(s => s.assigned_to===currentUser.id && ["visa","predep","departed"].includes(s.stage));
     return [];
-  }, [students, currentUser, isAdmin, isBDE, isCounsel, isVisa]);
+  }, [students, currentUser, isAdmin, isBDE, isCounsel, isVisa, isManager]);
 
   const pendingAssignment = useMemo(() => students.filter(s => s.stage==="lead" && !s.bde_id && !s.assigned_to), [students]);
   const memberName = (id) => team.find(t => t.id===id)?.name || "";
@@ -343,14 +371,14 @@ export default function App() {
   const assignCounsellor = async (studentId, cId) => {
     if (!cId) return;
     const cName = memberName(cId);
-    // Directly assign counsellor and move to counsel stage — works for both BDE and Admin
     await updStudent(studentId, { assigned_to: cId, stage: "counsel" });
     await doAddNote(studentId, `✅ Counsellor assigned: ${cName} — moved to Counselling stage`);
-    // For BDEs: force them to immediately book a slot so we never get orphan Counselling students
-    if (isBDE) {
-      setPendingBooking({ counsellorId: cId, studentId });
-      setTab("slots");
-      notify(`Assigned to ${cName} → now pick a counselling slot`);
+    if (isBDE || isManager) {
+      setSpCounsellorId(cId);
+      setSpStudentId(studentId);
+      setSpDate(todayStr());
+      setShowSlotPicker(true);
+      notify(`${cName} assigned — pick a slot below`);
     } else {
       notify(`Assigned to ${cName} → Counselling ✓`);
     }
@@ -604,7 +632,10 @@ export default function App() {
       </div>
     </div>
   );
-  if (!currentUser) return <LoginScreen team={team} security={security} onLogin={(u,r)=>{setCurrentUser(u);setActiveRole(r);}}/>;
+  if (!currentUser) return <LoginScreen team={team} security={security} onLogin={(u,r)=>{
+    setCurrentUser(u); setActiveRole(r); setTab("dashboard");
+    try { localStorage.setItem("crm_user", JSON.stringify(u)); localStorage.setItem("crm_role", r||""); } catch {}
+  }}/>;
 
   const selectedStudent = students.find(s=>s.id===selected);
   const userRoles = currentUser.isAdmin ? ["Admin"] : parseRoles(currentUser.role);
@@ -639,7 +670,7 @@ export default function App() {
         </div>
         {/* User chip with role switcher */}
         <div className="mt-4 mx-1 px-3 py-2 rounded-xl bg-white/10 flex items-center gap-2">
-          <div className="w-7 h-7 rounded-lg flex items-center justify-center font-bold text-white text-xs" style={{background:rMeta(role)?.color}}>{currentUser.name[0]}</div>
+          <div className="w-7 h-7 rounded-lg flex items-center justify-center font-bold text-white text-xs" style={{background:rMeta(role)?.color}}>{(currentUser.name||"?")[0]}</div>
           <div className="flex-1 min-w-0">
             <div className="text-white text-xs font-semibold truncate">{currentUser.name}</div>
             {userRoles.length>1
@@ -649,11 +680,11 @@ export default function App() {
               : <div className="text-[10px]" style={{color:rMeta(role)?.color}}>{role}</div>
             }
           </div>
-          <button onClick={()=>{setCurrentUser(null);setActiveRole(null);}} className="p-1 rounded-lg hover:bg-white/10 text-blue-200/60 hover:text-white"><LogOut size={13}/></button>
+          <button onClick={()=>{setCurrentUser(null);setActiveRole(null);try{localStorage.removeItem("crm_user");localStorage.removeItem("crm_role");}catch{}}} className="p-1 rounded-lg hover:bg-white/10 text-blue-200/60 hover:text-white" title="Logout"><LogOut size={13}/></button>
         </div>
         <nav className="mt-5 space-y-1">
           {NAV.map(([id,Icon,label])=>(
-            <button key={id} onClick={()=>{setTab(id);setSelected(null);setSelLeads(new Set());}}
+            <button key={id} onClick={()=>goTab(id)}
               className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition ${tab===id?"text-slate-900 bg-white":"text-blue-100/80 hover:bg-white/10"}`}>
               <Icon size={17} style={tab===id?{color:T.blue}:{}}/>
               {label}
@@ -662,8 +693,8 @@ export default function App() {
             </button>
           ))}
         </nav>
-        {(isAdmin||isBDE) && (
-          <button onClick={()=>setShowAdd(true)} className="mt-5 flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-white text-sm font-bold hover:opacity-90" style={{background:isBDE?T.teal:T.blue}}>
+        {(isAdmin||isBDE||isManager) && (
+          <button onClick={()=>setShowAdd(true)} className="mt-5 flex items-center justify-center gap-2 w-full py-2.5 rounded-xl text-white text-sm font-bold hover:opacity-90" style={{background:(isBDE||isManager)?T.teal:T.blue}}>
             <UserPlus size={16}/> Add lead
           </button>
         )}
@@ -698,7 +729,7 @@ export default function App() {
               <div className="absolute mt-1.5 w-full card overflow-hidden z-50">
                 {searchHits.map(s=>(
                   <button key={s.id} onClick={()=>openStudent(s.id)} className="w-full flex items-center gap-3 px-3.5 py-2.5 hover:bg-blue-50/50 text-left border-b last:border-0" style={{borderColor:T.line}}>
-                    <span className="w-7 h-7 rounded-lg flex items-center justify-center text-white text-xs font-bold" style={{background:stageOf(s.stage).color}}>{s.name[0]}</span>
+                    <span className="w-7 h-7 rounded-lg flex items-center justify-center text-white text-xs font-bold" style={{background:stageOf(s.stage).color}}>{(s.name||"?")[0]}</span>
                     <span className="flex-1 min-w-0"><span className="block text-sm font-semibold truncate">{s.name}</span><span className="block text-[11px] text-slate-400 num">{s.phone} · {stageOf(s.stage).label}</span></span>
                     <ArrowRight size={13} className="text-slate-300"/>
                   </button>
@@ -707,7 +738,7 @@ export default function App() {
             )}
           </div>
           <span className="hidden md:flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg" style={{background:rMeta(role)?.badge,color:rMeta(role)?.tx}}>{role}</span>
-          {(isAdmin||isBDE) && <button onClick={()=>setShowAdd(true)} className="md:hidden p-2.5 rounded-xl text-white" style={{background:T.blue}}><UserPlus size={16}/></button>}
+          {(isAdmin||isBDE||isManager) && <button onClick={()=>setShowAdd(true)} className="md:hidden p-2.5 rounded-xl text-white" style={{background:T.blue}}><UserPlus size={16}/></button>}
         </header>
 
         <main className="flex-1 p-4 sm:p-6 max-w-6xl mx-auto w-full pb-24 md:pb-8">
@@ -803,7 +834,7 @@ export default function App() {
                 </div>
               </div>
 
-              <TodaySchedule slots={slots} students={students} team={team} isAdmin={isAdmin} isBDE={isBDE} onTabChange={setTab}/>
+              <TodaySchedule slots={slots} students={students} team={team} isAdmin={isAdmin} isBDE={isBDE} isManager={isManager} onTabChange={setTab}/>
             </div>
           )}
 
@@ -814,19 +845,52 @@ export default function App() {
               <div className="flex gap-3 overflow-x-auto overflow-y-hidden pb-4" style={{scrollbarWidth:"thin",scrollbarColor:"#CBD5E1 transparent"}}>
                 {STAGES.map(st=>{
                   const col=visibleStudents.filter(s=>s.stage===st.id);
+                  const inSel=pipeSelStage===st.id;
+                  const allColSelected=col.length>0&&col.every(s=>pipeSelected.has(s.id));
                   return (
                     <div key={st.id} className="w-60 shrink-0 rounded-2xl p-3 flex flex-col" style={{background:"#ECF1F9",maxHeight:"calc(100vh - 180px)"}}>
-                      <div className="flex items-center gap-2 mb-3 px-1 shrink-0">
-                        <span className="w-2.5 h-2.5 rounded-full" style={{background:st.color}}/>
-                        <span className="text-xs font-bold">{st.label}</span>
-                        <span className="ml-auto text-[10px] font-bold text-slate-500 bg-white rounded-full px-2 py-0.5 num">{col.length}</span>
+                      {/* Column header */}
+                      <div className="flex items-center gap-2 mb-2 px-1 shrink-0">
+                        <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{background:st.color}}/>
+                        <span className="text-xs font-bold truncate flex-1">{st.label}</span>
+                        <span className="text-[10px] font-bold text-slate-500 bg-white rounded-full px-2 py-0.5 num shrink-0">{col.length}</span>
+                        {col.length>0 && !inSel && (isAdmin || isManager || (isBDE && ["lead","notinterested","enrolled"].includes(st.id))) && (
+                          <button onClick={()=>{setPipeSelStage(st.id);setPipeSelected(new Set());}} title="Select to delete" className="p-1 rounded hover:bg-white/60 text-slate-400 hover:text-red-500 shrink-0"><Trash2 size={12}/></button>
+                        )}
+                        {inSel && (
+                          <button onClick={()=>{setPipeSelStage(null);setPipeSelected(new Set());}} className="text-[10px] font-bold text-slate-500 hover:text-slate-700 shrink-0">✕</button>
+                        )}
                       </div>
+                      {/* Select-mode action bar */}
+                      {inSel && (
+                        <div className="mb-2 space-y-1.5 shrink-0">
+                          <div className="flex gap-1.5">
+                            <button onClick={()=>setPipeSelected(allColSelected ? new Set() : new Set(col.map(s=>s.id)))}
+                              className="flex-1 text-[10px] font-bold py-1 rounded-lg border border-slate-300 bg-white text-slate-600">
+                              {allColSelected?"Deselect all":"Select all"}
+                            </button>
+                            <button
+                              disabled={pipeSelected.size===0}
+                              onClick={async()=>{
+                                if(!window.confirm(`Delete ${pipeSelected.size} student(s) from ${st.label}? This cannot be undone.`)) return;
+                                const ids=[...pipeSelected];
+                                setPipeSelStage(null); setPipeSelected(new Set());
+                                for(const id of ids) await doDeleteStudent(id);
+                                notify(`${ids.length} student(s) deleted`);
+                              }}
+                              className="flex-1 text-[10px] font-bold py-1 rounded-lg text-white disabled:opacity-40"
+                              style={{background:T.danger}}>
+                              Delete ({pipeSelected.size})
+                            </button>
+                          </div>
+                        </div>
+                      )}
                       <div className="space-y-2 overflow-y-auto flex-1 pr-0.5" style={{scrollbarWidth:"thin",scrollbarColor:"#CBD5E1 transparent"}}>
                         {col.length===0 && <div className="text-[11px] text-slate-400 text-center py-3 rounded-xl border border-dashed" style={{borderColor:"#CBD5E1"}}>Empty</div>}
                         {col.map(s=>{
-                          // Find booked slot: 1) direct booked_by match, 2) most recent booking note
+                          const isChecked=pipeSelected.has(s.id);
                           let bookedSlot = slots.find(sl=>sl.booked_by===s.id&&sl.status==="booked");
-                          let noteBooking = null; // { date, time } parsed from note as a fallback
+                          let noteBooking = null;
                           if (!bookedSlot) {
                             const bookingNotes = (s.notes||[])
                               .filter(n=>n.text?.startsWith("📅 Counselling booked"))
@@ -834,7 +898,6 @@ export default function App() {
                             for (const bn of bookingNotes) {
                               const m = bn.text.match(/on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2})/);
                               if (m) {
-                                // Match by date+time only (counsellor may not be set yet in local state)
                                 const sl = slots.find(x=>x.slot_date===m[1]&&x.slot_time===m[2]);
                                 if (sl) { bookedSlot = sl; break; }
                                 if (!noteBooking) noteBooking = { slot_date: m[1], slot_time: m[2] };
@@ -843,9 +906,14 @@ export default function App() {
                           }
                           const bk = bookedSlot || noteBooking;
                           return (
-                          <div key={s.id} className="card lift p-3">
+                          <div key={s.id}
+                            className={`card p-3 transition ${inSel?"cursor-pointer":""} ${isChecked?"ring-2 ring-red-400 bg-red-50":""}`}
+                            onClick={inSel?()=>{const n=new Set(pipeSelected);isChecked?n.delete(s.id):n.add(s.id);setPipeSelected(n);}:undefined}>
                             <div className="flex items-center gap-1.5">
-                              <button onClick={()=>openStudent(s.id)} className="font-semibold text-sm hover:underline text-left truncate flex-1">{s.name}</button>
+                              {inSel && <span className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 ${isChecked?"bg-red-500 border-red-500":"border-slate-300"}`}>
+                                {isChecked&&<span className="text-white text-[9px] font-bold">✓</span>}
+                              </span>}
+                              <button onClick={inSel?e=>e.stopPropagation():()=>openStudent(s.id)} className="font-semibold text-sm hover:underline text-left truncate flex-1">{s.name}</button>
                               {s.qualification && <span className="w-2 h-2 rounded-full shrink-0" style={{background:qualColor(s.qualification)}}/>}
                             </div>
                             <div className="text-[11px] text-slate-500">{memberName(s.assigned_to)||"Unassigned"}</div>
@@ -856,12 +924,14 @@ export default function App() {
                                 </span>
                               </div>
                             )}
-                            <div className="flex items-center gap-1 mt-2">
-                              {(isAdmin||isCounsel||isVisa) && <button onClick={()=>moveStage(s.id,-1)} disabled={stageIdx(s.stage)===0} className="p-1 rounded hover:bg-slate-100 disabled:opacity-20"><ChevronLeft size={13}/></button>}
-                              <a href={`tel:${telNum(s.phone)}`} className="flex-1 flex justify-center p-2 rounded-lg text-white font-bold" style={{background:T.blue}}><PhoneCall size={14}/></a>
-                              <a href={waNum(s.phone)} target="_blank" rel="noreferrer" className="p-2 rounded-lg text-white font-bold" style={{background:"#25D366"}}><MessageCircle size={14}/></a>
-                              {(isAdmin||isCounsel||isVisa) && <button onClick={()=>moveStage(s.id,1)} disabled={stageIdx(s.stage)===STAGES.length-1} className="p-1 rounded hover:bg-slate-100 disabled:opacity-20" style={{color:T.blue}}><ChevronRight size={13}/></button>}
-                            </div>
+                            {!inSel && (
+                              <div className="flex items-center gap-1 mt-2">
+                                {(isAdmin||isCounsel||isVisa||isManager) && <button onClick={()=>moveStage(s.id,-1)} disabled={stageIdx(s.stage)===0} className="p-1 rounded hover:bg-slate-100 disabled:opacity-20"><ChevronLeft size={13}/></button>}
+                                <a href={`tel:${telNum(s.phone)}`} className="flex-1 flex justify-center p-2 rounded-lg text-white font-bold" style={{background:T.blue}}><PhoneCall size={14}/></a>
+                                <a href={waNum(s.phone)} target="_blank" rel="noreferrer" className="p-2 rounded-lg text-white font-bold" style={{background:"#25D366"}}><MessageCircle size={14}/></a>
+                                {(isAdmin||isCounsel||isVisa||isManager) && <button onClick={()=>moveStage(s.id,1)} disabled={stageIdx(s.stage)===STAGES.length-1} className="p-1 rounded hover:bg-slate-100 disabled:opacity-20" style={{color:T.blue}}><ChevronRight size={13}/></button>}
+                              </div>
+                            )}
                           </div>
                           );
                         })}
@@ -878,7 +948,7 @@ export default function App() {
             <div className="space-y-4">
               <div className="flex flex-wrap gap-2 items-center">
                 <h1 className="text-xl font-extrabold mr-auto">Students</h1>
-                {(isAdmin||isBDE) && <button onClick={()=>setShowAdd(true)} className="flex items-center gap-2 px-3 py-2 rounded-xl text-white text-sm font-semibold" style={{background:isBDE?T.teal:T.blue}}><UserPlus size={14}/> Add lead</button>}
+                {(isAdmin||isBDE||isManager) && <button onClick={()=>setShowAdd(true)} className="flex items-center gap-2 px-3 py-2 rounded-xl text-white text-sm font-semibold" style={{background:(isBDE||isManager)?T.teal:T.blue}}><UserPlus size={14}/> Add lead</button>}
               </div>
 
               {/* Filters */}
@@ -924,7 +994,7 @@ export default function App() {
               </div>
 
               {/* Bulk action bar */}
-              {isAdmin && selLeads.size>0 && (
+              {(isAdmin||isManager) && selLeads.size>0 && (
                 <div className="card p-3 flex flex-wrap items-center gap-3 border-2" style={{borderColor:T.blue}}>
                   <span className="font-bold text-sm" style={{color:T.blue}}>{selLeads.size} selected</span>
                   <select defaultValue="" onChange={e=>{if(e.target.value){bulkAssignBDE(e.target.value);e.target.value="";}} } className="py-1.5 px-2 rounded-xl border text-sm bg-white font-medium" style={{borderColor:T.line}}>
@@ -945,7 +1015,7 @@ export default function App() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-[11px] uppercase tracking-wider text-slate-400 border-b" style={{borderColor:T.line}}>
-                      {isAdmin && <th className="p-3 w-8"><button onClick={toggleAll}>{selLeads.size===filtered.length&&filtered.length>0?<CheckSquare size={15} style={{color:T.blue}}/>:<Square size={15}/>}</button></th>}
+                      {(isAdmin||isManager) && <th className="p-3 w-8"><button onClick={toggleAll}>{selLeads.size===filtered.length&&filtered.length>0?<CheckSquare size={15} style={{color:T.blue}}/>:<Square size={15}/>}</button></th>}
                       <th className="p-3">Student</th><th className="p-3">Course</th><th className="p-3">Stage</th><th className="p-3">Assigned</th><th className="p-3">Call Status · Follow-up</th><th className="p-3">Actions</th>
                     </tr>
                   </thead>
@@ -954,7 +1024,7 @@ export default function App() {
                       const st=stageOf(s.stage); const chk=selLeads.has(s.id);
                       return (
                         <tr key={s.id} className={`border-b last:border-0 hover:bg-blue-50/40 cursor-pointer ${chk?"bg-blue-50":""}`} style={{borderColor:"#F0F4FA"}}>
-                          {isAdmin && <td className="p-3" onClick={e=>{e.stopPropagation();toggleLead(s.id);}}>{chk?<CheckSquare size={15} style={{color:T.blue}}/>:<Square size={15} className="text-slate-300"/>}</td>}
+                          {(isAdmin||isManager) && <td className="p-3" onClick={e=>{e.stopPropagation();toggleLead(s.id);}}>{chk?<CheckSquare size={15} style={{color:T.blue}}/>:<Square size={15} className="text-slate-300"/>}</td>}
                           <td className="p-3" onClick={()=>setSelected(s.id)}>
                             <div className="font-semibold flex items-center gap-2">{s.name}
                               {s.qualification && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{background:qualColor(s.qualification)+"1A",color:qualColor(s.qualification)}}>{s.qualification}</span>}
@@ -1034,13 +1104,20 @@ export default function App() {
                             <div className="flex gap-1">
                               <a href={`tel:${telNum(s.phone)}`} className="p-2.5 rounded-xl text-white font-bold" style={{background:T.blue}} title="Call"><PhoneCall size={15}/></a>
                               <a href={waNum(s.phone)} target="_blank" rel="noreferrer" className="p-2.5 rounded-xl text-white font-bold" style={{background:"#25D366"}} title="WhatsApp"><MessageCircle size={15}/></a>
-                              {isAdmin && <button onClick={()=>{if(window.confirm(`Delete ${s.name}?`))doDeleteStudent(s.id);}} className="p-2.5 rounded-xl hover:bg-red-50 text-slate-300 hover:text-red-500" title="Delete"><Trash2 size={15}/></button>}
+                              {(isAdmin||isManager) && <button onClick={()=>{if(window.confirm(`Delete ${s.name}?`))doDeleteStudent(s.id);}} className="p-2.5 rounded-xl hover:bg-red-50 text-slate-300 hover:text-red-500" title="Delete"><Trash2 size={15}/></button>}
                             </div>
                           </td>
                         </tr>
                       );
                     })}
-                    {filtered.length===0 && <tr><td colSpan={isAdmin?7:6} className="p-10 text-center text-sm text-slate-400">No students found.</td></tr>}
+                    {filtered.length===0 && (
+                      <tr><td colSpan={(isAdmin||isManager)?7:6} className="p-10 text-center">
+                        <p className="text-sm text-slate-400">No students found.</p>
+                        {(query||filterStage!=="all"||filterCountry!=="all"||filterQual!=="all"||filterCall!=="all") && (
+                          <button onClick={()=>{setQuery("");setFilterStage("all");setFilterCountry("all");setFilterQual("all");setFilterCall("all");}} className="mt-2 text-xs font-semibold text-blue-600 hover:underline">Clear all filters</button>
+                        )}
+                      </td></tr>
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -1051,7 +1128,7 @@ export default function App() {
           {tab==="students" && selectedStudent && (
             <StudentDetail
               s={selectedStudent} team={team} counsellors={counsellors} bdeList={bdeList}
-              memberName={memberName} role={role} isAdmin={isAdmin} isBDE={isBDE} isCounsel={isCounsel} isVisa={isVisa}
+              memberName={memberName} role={role} isAdmin={isAdmin} isBDE={isBDE} isCounsel={isCounsel} isVisa={isVisa} isManager={isManager}
               slots={slots}
               onBack={()=>setSelected(null)} onUpdate={updStudent} onMove={moveStage}
               onAssignBDE={assignToBDE} onAssignCounsellor={assignCounsellor}
@@ -1064,11 +1141,12 @@ export default function App() {
 
           {/* SLOTS */}
           {tab==="slots" && (
-            <SlotsView slots={slots} team={team} students={students} isAdmin={isAdmin} isBDE={isBDE} isCounsel={isCounsel}
+            <SlotsView slots={slots} team={team} students={students} isAdmin={isAdmin} isBDE={isBDE} isCounsel={isCounsel} isManager={isManager}
               currentUser={currentUser} memberName={memberName}
               onAddSlot={doAddSlot} onBookSlot={doBookSlot} onFreeSlot={doFreeSlot} onDeleteSlot={doDeleteSlot}
               showAddSlot={showAddSlot} setShowAddSlot={setShowAddSlot}
-              pendingBooking={pendingBooking} clearPendingBooking={()=>setPendingBooking(null)}/>
+              pendingBooking={pendingBooking} clearPendingBooking={()=>setPendingBooking(null)}
+              notify={notify}/>
           )}
 
           {/* TEAM */}
@@ -1099,7 +1177,7 @@ export default function App() {
       {/* MOBILE NAV */}
       <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 flex border-t" style={{background:T.ink,borderColor:"rgba(255,255,255,.08)"}}>
         {NAV.map(([id,Icon,label])=>(
-          <button key={id} onClick={()=>{setTab(id);setSelected(null);}} className="flex-1 flex flex-col items-center gap-0.5 py-2.5">
+          <button key={id} onClick={()=>goTab(id)} className="flex-1 flex flex-col items-center gap-0.5 py-2.5">
             <Icon size={18} style={{color:tab===id?"#fff":"#7C9CCB"}}/>
             <span className="text-[9px] font-bold" style={{color:tab===id?"#fff":"#7C9CCB"}}>{label}</span>
           </button>
@@ -1107,7 +1185,7 @@ export default function App() {
       </nav>
 
       {/* MODALS */}
-      {showAdd && (isAdmin||isBDE) && <AddStudentModal team={team} isBDE={isBDE} currentUser={currentUser} onClose={()=>setShowAdd(false)} onSave={doAddStudent}/>}
+      {showAdd && (isAdmin||isBDE||isManager) && <AddStudentModal team={team} isBDE={isBDE} isManager={isManager} currentUser={currentUser} onClose={()=>setShowAdd(false)} onSave={doAddStudent}/>}
       {showAddTeam && isAdmin && <AddTeamModal onClose={()=>setShowAddTeam(false)} onSave={doAddTeam}/>}
       {showImport && isAdmin && <ImportModal team={team} onClose={()=>setShowImport(false)} onImport={doBulkImport}/>}
       {showDistribute && isAdmin && (
@@ -1171,6 +1249,22 @@ export default function App() {
       )}
 
       {toast && <div className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl text-white text-sm font-semibold shadow-lg whitespace-nowrap" style={{background:T.ink}}>{toast}</div>}
+
+      {showSlotPicker && (
+        <SlotPickerModal
+          counsellorId={spCounsellorId}
+          studentId={spStudentId}
+          date={spDate}
+          onDateChange={setSpDate}
+          slots={slots}
+          counsellors={counsellors}
+          students={students}
+          onBook={async (slotId, sId) => { await doBookSlot(slotId, sId); setShowSlotPicker(false); }}
+          onAddSlot={doAddSlot}
+          onClose={() => setShowSlotPicker(false)}
+          notify={notify}
+        />
+      )}
     </div>
   );
 }
@@ -1352,124 +1446,417 @@ function TeamCard({ member, load, onUpdate, onDelete }) {
 
 /* ════ LOGIN ════ */
 function LoginScreen({ team, security, onLogin }) {
-  const [step, setStep]           = useState(1); // 1=role, 2=name, 3=role-choice(multi), 4=pin
-  const [roleFilter, setRoleFilter]   = useState(null);
-  const [selMember, setSelMember]     = useState(null);
-  const [chosenRole, setChosenRole]   = useState(null);
-  const [pin, setPin]             = useState("");
-  const [showPin, setShowPin]     = useState(false);
-  const [wrong, setWrong]         = useState(false);
+  const [step, setStep]             = useState(1);
+  const [roleFilter, setRoleFilter] = useState(null);
+  const [selMember, setSelMember]   = useState(null);
+  const [chosenRole, setChosenRole] = useState(null);
+  const [pin, setPin]               = useState("");
+  const [showPin, setShowPin]       = useState(false);
+  const [wrong, setWrong]           = useState(false);
+  const [animating, setAnimating]   = useState(false);
+  const [mouse, setMouse]           = useState({ x: 0.5, y: 0.5 });
+  const containerRef                = React.useRef(null);
 
-  const allRoles = ["Admin","BDE","Counsellor","Visa Officer"];
+  React.useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onMove = (clientX, clientY) => {
+      const r = el.getBoundingClientRect();
+      setMouse({
+        x: Math.max(0, Math.min(1, (clientX - r.left) / r.width)),
+        y: Math.max(0, Math.min(1, (clientY - r.top)  / r.height)),
+      });
+    };
+    const onMouse = e => onMove(e.clientX, e.clientY);
+    const onTouch = e => e.touches[0] && onMove(e.touches[0].clientX, e.touches[0].clientY);
+    el.addEventListener('mousemove', onMouse, { passive: true });
+    el.addEventListener('touchmove', onTouch, { passive: true });
+    return () => { el.removeEventListener('mousemove', onMouse); el.removeEventListener('touchmove', onTouch); };
+  }, []);
+
+  const allRoles = ["Admin","BDE","Counsellor","Visa Officer","Manager"];
   const adminUser = { id:"admin-0", name:"Admin", role:"Admin", isAdmin:true };
-
   const membersForRole = roleFilter === "Admin" ? [adminUser]
     : team.filter(m => parseRoles(m.role).includes(roleFilter||""));
+
+  const goStep = (n) => { setAnimating(true); setTimeout(()=>{ setStep(n); setAnimating(false); }, 180); };
 
   const pickMember = (m) => {
     setSelMember(m);
     const mRoles = m.isAdmin ? ["Admin"] : parseRoles(m.role);
-    if (mRoles.length > 1) { setStep(3); return; }
+    if (mRoles.length > 1) { goStep(3); return; }
     setChosenRole(mRoles[0]);
     const needPin = m.isAdmin ? !!security.adminPass : !!m.password_hash;
-    setStep(needPin ? 4 : "go");
-    if (!needPin) doLogin(m, mRoles[0]);
+    if (!needPin) { doLogin(m, mRoles[0]); return; }
+    goStep(4);
   };
   const pickRole = (r) => {
     setChosenRole(r);
     const needPin = selMember.isAdmin ? !!security.adminPass : !!selMember.password_hash;
-    setStep(needPin ? 4 : "go");
-    if (!needPin) doLogin(selMember, r);
+    if (!needPin) { doLogin(selMember, r); return; }
+    goStep(4);
   };
-  const doLogin = (m, r) => {
-    onLogin({ id:m.id, name:m.name, role:m.role||"Admin", isAdmin:!!m.isAdmin }, r);
-  };
+  const doLogin = (m, r) => onLogin({ id:m.id, name:m.name, role:m.role||"Admin", isAdmin:!!m.isAdmin }, r);
   const submitPin = () => {
     const expected = selMember.isAdmin ? security.adminPass : selMember.password_hash;
     if (hashPassword(pin) !== expected) { setWrong(true); setPin(""); return; }
     doLogin(selMember, chosenRole);
   };
 
+  const roleIcons = { Admin: ShieldCheck, BDE: PhoneCall, Counsellor: GraduationCap, "Visa Officer": Globe2, Manager: Briefcase };
+  const roleDesc  = { Admin:"Full system access", BDE:"Leads & call tracking", Counsellor:"Sessions & shortlisting", "Visa Officer":"Visa filing & travel", Manager:"Supervisor — full team access" };
+
+  const stepNum   = step===1?1: step===2?2: step===3?3: 4;
+
+  // Parallax + spotlight values from mouse pos
+  const px = (mouse.x - 0.5) * -40;
+  const py = (mouse.y - 0.5) * -25;
+  const spotX = mouse.x * 100;
+  const spotY = mouse.y * 100;
+
+  const onCardTilt = (e) => {
+    const el = e.currentTarget;
+    const r = el.getBoundingClientRect();
+    const rx = ((e.clientX - r.left) / r.width  - 0.5) * 18;
+    const ry = -((e.clientY - r.top)  / r.height - 0.5) * 18;
+    el.style.transform = `perspective(700px) rotateX(${ry}deg) rotateY(${rx}deg) translateZ(6px) scale(1.02)`;
+  };
+  const offCardTilt = (e) => {
+    e.currentTarget.style.transform = 'perspective(700px) rotateX(0deg) rotateY(0deg) translateZ(0) scale(1)';
+  };
+
   return (
-    <div className="min-h-screen flex items-center justify-center p-4" style={{background:"linear-gradient(160deg,#0A1F3D,#13315C)",fontFamily:"'Plus Jakarta Sans',system-ui,sans-serif"}}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&display=swap');`}</style>
-      <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-sm">
-        <div className="text-center mb-6">
-          <div className="w-14 h-14 mx-auto rounded-2xl flex items-center justify-center font-extrabold text-white text-xl" style={{background:"linear-gradient(135deg,#0d6efd,#F59E0B)"}}>AV</div>
-          <h1 className="font-extrabold text-xl mt-3" style={{color:"#0A1F3D"}}>ABROAD VEDA</h1>
-          <p className="text-sm text-slate-400 mt-1">Sign in to your workspace</p>
+    <div ref={containerRef} className="relative min-h-screen overflow-hidden select-none"
+      style={{fontFamily:"'Plus Jakarta Sans',system-ui,sans-serif"}}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&display=swap');
+        @keyframes lFadeUp   { from{opacity:0;transform:translateY(24px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes lShake    { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-7px)} 40%,80%{transform:translateX(7px)} }
+        @keyframes lFloat1   { 0%,100%{transform:translateY(0) scale(1)} 50%{transform:translateY(-22px) scale(1.05)} }
+        @keyframes lFloat2   { 0%,100%{transform:translateY(0) scale(1)} 50%{transform:translateY(-15px) scale(0.95)} }
+        @keyframes lFloat3   { 0%,100%{transform:translateY(0) rotate(0deg)} 50%{transform:translateY(-18px) rotate(8deg)} }
+        @keyframes lPulse    { 0%,100%{opacity:.5;transform:scale(1)} 50%{opacity:.8;transform:scale(1.06)} }
+        @keyframes lShimmer  { 0%{background-position:200% center} 100%{background-position:-200% center} }
+        .l-panel  { animation: lFadeUp .5s cubic-bezier(.16,1,.3,1) both; }
+        .l-step   { animation: lFadeUp .25s ease both; }
+        .l-fade   { opacity:0; pointer-events:none; }
+        .l-shake  { animation: lShake .4s ease; }
+        .l-float1 { animation: lFloat1 7s ease-in-out infinite; }
+        .l-float2 { animation: lFloat2 9s ease-in-out infinite; }
+        .l-float3 { animation: lFloat3 11s ease-in-out infinite; }
+        .l-pulse  { animation: lPulse 3s ease-in-out infinite; }
+        .l-shimmer-text {
+          background: linear-gradient(90deg,#fff 0%,#93C5FD 25%,#F59E0B 50%,#93C5FD 75%,#fff 100%);
+          background-size: 200% auto;
+          -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+          background-clip: text;
+          animation: lShimmer 4s linear infinite;
+        }
+        .l-glass {
+          background: rgba(255,255,255,0.08);
+          backdrop-filter: blur(24px) saturate(180%);
+          -webkit-backdrop-filter: blur(24px) saturate(180%);
+          border: 1px solid rgba(255,255,255,0.15);
+        }
+        .l-role-btn {
+          background: rgba(255,255,255,0.06);
+          border: 1px solid rgba(255,255,255,0.12);
+          transition: all .2s cubic-bezier(.16,1,.3,1);
+          transform-style: preserve-3d;
+          transform: perspective(700px) rotateX(0deg) rotateY(0deg) scale(1);
+        }
+        .l-role-btn:hover { background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.3); }
+        .l-role-btn:active { transform: perspective(700px) scale(0.97) !important; }
+        .l-pin-input { background: rgba(255,255,255,0.1); border: 1.5px solid rgba(255,255,255,0.2); color:#fff; width:100%; padding:12px 48px 12px 16px; border-radius:12px; font-size:14px; font-weight:500; }
+        .l-pin-input::placeholder { color: rgba(255,255,255,0.4); }
+        .l-pin-input:focus { outline:none; border-color:rgba(255,255,255,0.5); background:rgba(255,255,255,0.15); }
+        .l-back-btn { color:rgba(255,255,255,0.5); transition:color .2s; background:none; border:none; cursor:pointer; display:flex; align-items:center; gap:4px; font-size:12px; font-weight:600; padding:0; margin-bottom:16px; }
+        .l-back-btn:hover { color:rgba(255,255,255,0.9); }
+        .l-sign-btn { background:linear-gradient(135deg,#0d6efd,#0a58ca); box-shadow:0 4px 20px rgba(13,110,253,.45); transition:all .2s ease; border:none; color:#fff; font-weight:700; font-size:14px; border-radius:12px; cursor:pointer; }
+        .l-sign-btn:hover:not(:disabled) { box-shadow:0 6px 30px rgba(13,110,253,.65); transform:translateY(-1px); }
+        .l-sign-btn:active:not(:disabled) { transform:scale(0.97); }
+        .l-sign-btn:disabled { opacity:.4; cursor:not-allowed; transform:none !important; }
+      `}</style>
+
+      {/* ── Parallax background photo ── */}
+      <div style={{
+        position:'absolute', inset:'-60px',
+        backgroundImage:"url('/hero.jpg')",
+        backgroundSize:'cover', backgroundPosition:'center',
+        transform:`translate(${px}px,${py}px)`,
+        transition:'transform 0.12s ease-out', willChange:'transform',
+      }}/>
+      {/* Dark overlays */}
+      <div style={{position:'absolute',inset:0,background:'linear-gradient(to right,rgba(4,14,30,0.88) 0%,rgba(4,14,30,0.6) 55%,rgba(4,14,30,0.82) 100%)'}}/>
+      <div style={{position:'absolute',inset:0,background:'linear-gradient(to bottom,rgba(0,0,0,0.05),rgba(0,0,0,0.3))'}}/>
+      {/* Cursor spotlight */}
+      <div style={{position:'absolute',inset:0,pointerEvents:'none',
+        background:`radial-gradient(700px circle at ${spotX}% ${spotY}%,rgba(13,110,253,0.15),transparent 65%)`,
+        transition:'background 0.06s'}}/>
+      {/* Dot grid */}
+      <div style={{position:'absolute',inset:0,pointerEvents:'none',opacity:0.18,
+        backgroundImage:'radial-gradient(circle,rgba(255,255,255,0.4) 1px,transparent 1px)',backgroundSize:'32px 32px'}}/>
+      {/* Floating orbs */}
+      <div className="l-float1" style={{position:'absolute',top:'10%',left:'7%',width:220,height:220,borderRadius:'50%',pointerEvents:'none',
+        background:'radial-gradient(circle,rgba(13,110,253,0.2),transparent 70%)'}}/>
+      <div className="l-float2" style={{position:'absolute',bottom:'18%',left:'2%',width:160,height:160,borderRadius:'50%',pointerEvents:'none',
+        background:'radial-gradient(circle,rgba(245,158,11,0.18),transparent 70%)'}}/>
+      <div className="l-float3" style={{position:'absolute',top:'35%',left:'28%',width:100,height:100,borderRadius:'50%',pointerEvents:'none',
+        background:'radial-gradient(circle,rgba(99,102,241,0.15),transparent 70%)'}}/>
+
+      {/* ── Content layout ── */}
+      <div style={{position:'relative',zIndex:10,minHeight:'100vh',display:'flex'}}>
+
+      {/* ── Left Branding ── */}
+      <div className="hidden lg:flex flex-col justify-between flex-1 p-14 pb-12">
+
+        {/* Logo */}
+        <div className="l-panel" style={{animationDelay:'0ms'}}>
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-2xl flex items-center justify-center font-extrabold text-white text-lg"
+              style={{background:'linear-gradient(135deg,#0d6efd,#F59E0B)',boxShadow:'0 4px 20px rgba(13,110,253,.5)'}}>AV</div>
+            <div>
+              <div className="font-extrabold text-white text-xl tracking-wider">ABROAD VEDA</div>
+              <div style={{color:'#93C5FD',fontSize:11,fontWeight:700,letterSpacing:'0.18em',textTransform:'uppercase'}}>CRM Workspace</div>
+            </div>
+          </div>
         </div>
 
-        {step===1 && (
-          <>
-            <p className="text-xs font-bold text-slate-500 mb-2 uppercase tracking-wider">Select your role</p>
-            <div className="grid grid-cols-2 gap-2">
-              {allRoles.map(r=>(
-                <button key={r} onClick={()=>{setRoleFilter(r);setStep(2);}}
-                  className="flex items-center gap-2 p-3 rounded-xl border-2 border-slate-200 hover:border-blue-400 transition">
-                  <div className="w-7 h-7 rounded-lg flex items-center justify-center text-white text-xs font-bold" style={{background:ROLE_META[r]?.color}}>{r[0]}</div>
-                  <div className="text-left"><div className="font-bold text-sm">{r}</div><div className="text-[10px] text-slate-400">{r==="Admin"?"Full access":r==="BDE"?"Leads & calls":r==="Counsellor"?"Sessions":"Visa & travel"}</div></div>
+        {/* Hero text */}
+        <div style={{maxWidth:480}}>
+          <div className="l-panel" style={{animationDelay:'80ms'}}>
+            <div style={{color:'#93C5FD',fontSize:12,fontWeight:700,letterSpacing:'0.2em',textTransform:'uppercase',marginBottom:16,display:'flex',alignItems:'center',gap:8}}>
+              <div style={{width:32,height:1,background:'#60A5FA'}}/>
+              Study Abroad CRM Platform
+            </div>
+            <h1 style={{fontSize:52,fontWeight:900,color:'#fff',lineHeight:1.05,margin:0,marginBottom:20}}>
+              Every dream<br/>student's
+              <span className="l-shimmer-text" style={{display:'block',marginTop:4}}>journey starts here.</span>
+            </h1>
+            <p style={{color:'rgba(219,234,254,0.8)',fontSize:15,lineHeight:1.65,margin:0}}>
+              Manage leads, book counselling sessions, track applications and guide students to their dream university.
+            </p>
+          </div>
+          <div className="l-panel" style={{animationDelay:'160ms',marginTop:32,display:'flex',flexWrap:'wrap',gap:10}}>
+            {[{e:"🎓",t:"13 Pipeline Stages"},{e:"🌍",t:"8 Countries"},{e:"⚡",t:"End-to-End Workflow"}].map(s=>(
+              <div key={s.t} className="l-glass l-pulse" style={{padding:'10px 16px',borderRadius:20,display:'flex',alignItems:'center',gap:8}}>
+                <span style={{fontSize:15}}>{s.e}</span>
+                <span style={{color:'#fff',fontSize:12,fontWeight:700}}>{s.t}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Bottom badge */}
+        <div className="l-panel" style={{animationDelay:'240ms',display:'flex',alignItems:'center',gap:8}}>
+          <ShieldCheck size={13} style={{color:'#4ADE80'}}/>
+          <span style={{color:'rgba(147,197,253,0.7)',fontSize:12,fontWeight:500}}>Secured with Row Level Security · Supabase PostgreSQL</span>
+        </div>
+      </div>
+
+      {/* ── Right Login Panel ── */}
+      <div style={{width:'100%',maxWidth:440,display:'flex',flexDirection:'column',justifyContent:'center',padding:'32px 24px'}}>
+        <div className="l-panel" style={{width:'100%',maxWidth:360,margin:'0 auto',animationDelay:'60ms'}}>
+
+          {/* Mobile logo */}
+          <div className="flex lg:hidden items-center gap-2.5 mb-8">
+            <div style={{width:36,height:36,borderRadius:10,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:900,color:'#fff',fontSize:13,background:'linear-gradient(135deg,#0d6efd,#F59E0B)'}}>AV</div>
+            <div style={{fontWeight:800,color:'#fff',fontSize:16,letterSpacing:'0.05em'}}>ABROAD VEDA</div>
+          </div>
+
+          {/* Glass card */}
+          <div className="l-glass" style={{borderRadius:28,padding:'28px 24px',boxShadow:'0 24px 60px rgba(0,0,0,0.4),0 0 0 1px rgba(255,255,255,0.08)'}}>
+
+            {/* Back + header */}
+            <div style={{marginBottom:20}}>
+              {step > 1 && (
+                <button className="l-back-btn" onClick={()=>goStep(step===4?(parseRoles(selMember?.role||"").length>1?3:2):step-1)}>
+                  <ChevronLeft size={14}/> Back
                 </button>
+              )}
+              <div style={{color:'rgba(255,255,255,0.45)',fontSize:10,fontWeight:700,letterSpacing:'0.18em',textTransform:'uppercase',marginBottom:4}}>
+                Step {stepNum} of {step<=3?3:4}
+              </div>
+              <h2 style={{color:'#fff',fontWeight:900,fontSize:22,margin:0,lineHeight:1.2}}>
+                {step===1?"Welcome back":step===2?"Choose profile":step===3?"Choose role":`Hi, ${selMember?.name?.split(" ")[0]} 👋`}
+              </h2>
+              <p style={{color:'rgba(255,255,255,0.45)',fontSize:12,margin:'4px 0 0',fontWeight:500}}>
+                {step===1?"Select your role to continue":step===2?"Pick your profile":step===3?"Sign in as which role?":"Enter your password"}
+              </p>
+            </div>
+
+            {/* Progress bar */}
+            <div style={{display:'flex',gap:6,marginBottom:20}}>
+              {[1,2,3,...(step===4?[4]:[])].map(n=>(
+                <div key={n} style={{height:3,borderRadius:4,flex:stepNum>=n?2:1,transition:'all .4s',
+                  background:stepNum>=n?'rgba(255,255,255,0.9)':'rgba(255,255,255,0.16)'}}/>
               ))}
             </div>
-          </>
-        )}
 
-        {step===2 && (
-          <>
-            <button onClick={()=>setStep(1)} className="text-xs text-slate-400 hover:text-slate-700 mb-3 flex items-center gap-1"><ChevronLeft size={13}/> Back</button>
-            <p className="text-xs font-bold text-slate-500 mb-2 uppercase tracking-wider">Select your name</p>
-            <div className="space-y-2">
-              {membersForRole.length===0 && <p className="text-sm text-slate-400 text-center py-4">No {roleFilter}s added yet.</p>}
-              {membersForRole.map(m=>(
-                <button key={m.id} onClick={()=>pickMember(m)}
-                  className="w-full flex items-center gap-3 p-3 rounded-xl border-2 border-slate-200 hover:border-blue-400 hover:bg-blue-50/30 text-left transition">
-                  <div className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-white" style={{background:rMeta(roleFilter)?.color}}>{m.name[0]}</div>
-                  <div className="flex-1">
-                    <div className="font-bold text-sm">{m.name}</div>
-                    <div className="text-[10px] text-slate-400 flex items-center gap-1">{(m.isAdmin&&security.adminPass)||m.password_hash?<><Lock size={9}/> Password protected</>:"No password"}</div>
+            <div className={animating ? "l-fade" : "l-step"}>
+
+              {/* Step 1 — Role selection */}
+              {step===1 && (
+                <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                  {allRoles.map(r => {
+                    const Icon = roleIcons[r] || Users;
+                    const meta = ROLE_META[r];
+                    return (
+                      <button key={r} className="l-role-btn" onClick={()=>{setRoleFilter(r);goStep(2);}}
+                        onMouseMove={onCardTilt} onMouseLeave={offCardTilt}
+                        style={{width:'100%',display:'flex',alignItems:'center',gap:14,padding:'12px 14px',borderRadius:16,textAlign:'left'}}>
+                        <div style={{width:40,height:40,borderRadius:12,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,
+                          background:`${meta?.color}22`,border:`1.5px solid ${meta?.color}44`}}>
+                          <Icon size={18} style={{color:meta?.color}}/>
+                        </div>
+                        <div style={{flex:1}}>
+                          <div style={{fontWeight:700,fontSize:13,color:'#fff'}}>{r}</div>
+                          <div style={{fontSize:11,color:'rgba(255,255,255,0.45)',marginTop:2,fontWeight:500}}>{roleDesc[r]}</div>
+                        </div>
+                        <ArrowRight size={14} style={{color:'rgba(255,255,255,0.25)',flexShrink:0}}/>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Step 2 — Member selection */}
+              {step===2 && (
+                <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                  {membersForRole.length===0 ? (
+                    <div style={{textAlign:'center',padding:'32px 0'}}>
+                      <Users size={32} style={{margin:'0 auto 12px',color:'rgba(255,255,255,0.2)'}}/>
+                      <p style={{fontSize:13,fontWeight:600,color:'rgba(255,255,255,0.5)',margin:0}}>No {roleFilter}s added yet</p>
+                      <p style={{fontSize:11,color:'rgba(255,255,255,0.3)',marginTop:4}}>Ask admin to add team members</p>
+                    </div>
+                  ) : membersForRole.map(m => {
+                    const hasPass = (m.isAdmin && security.adminPass) || m.password_hash;
+                    const color = rMeta(roleFilter)?.color || '#0d6efd';
+                    return (
+                      <button key={m.id} className="l-role-btn" onClick={()=>pickMember(m)}
+                        onMouseMove={onCardTilt} onMouseLeave={offCardTilt}
+                        style={{width:'100%',display:'flex',alignItems:'center',gap:14,padding:'12px 14px',borderRadius:16,textAlign:'left'}}>
+                        <div style={{width:40,height:40,borderRadius:12,display:'flex',alignItems:'center',justifyContent:'center',
+                          fontWeight:800,fontSize:15,color,background:`${color}22`,border:`1.5px solid ${color}44`,flexShrink:0}}>
+                          {(m.name||"?")[0].toUpperCase()}
+                        </div>
+                        <div style={{flex:1}}>
+                          <div style={{fontWeight:700,fontSize:13,color:'#fff'}}>{m.name}</div>
+                          <div style={{display:'flex',alignItems:'center',gap:4,marginTop:2}}>
+                            {hasPass
+                              ? <><Lock size={9} style={{color:'#F59E0B'}}/><span style={{fontSize:10,color:'#F59E0B',fontWeight:600}}>Password protected</span></>
+                              : <span style={{fontSize:10,color:'#4ADE80',fontWeight:600}}>Quick access</span>
+                            }
+                          </div>
+                        </div>
+                        <ArrowRight size={14} style={{color:'rgba(255,255,255,0.25)',flexShrink:0}}/>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Step 3 — Multi-role choice */}
+              {step===3 && selMember && (
+                <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                  <div style={{display:'flex',alignItems:'center',gap:12,padding:'10px 12px',borderRadius:12,marginBottom:8,
+                    background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.1)'}}>
+                    <div style={{width:34,height:34,borderRadius:10,display:'flex',alignItems:'center',justifyContent:'center',
+                      fontWeight:800,color:'#fff',background:rMeta(roleFilter)?.color}}>
+                      {(selMember.name||"?")[0]}
+                    </div>
+                    <div>
+                      <div style={{fontWeight:700,fontSize:13,color:'#fff'}}>{selMember.name}</div>
+                      <div style={{fontSize:11,color:'rgba(255,255,255,0.45)'}}>Sign in as which role?</div>
+                    </div>
                   </div>
-                  <ArrowRight size={14} className="text-slate-300"/>
-                </button>
-              ))}
-            </div>
-          </>
-        )}
+                  {parseRoles(selMember.role).map(r => {
+                    const Icon = roleIcons[r] || Users;
+                    const meta = ROLE_META[r];
+                    return (
+                      <button key={r} className="l-role-btn" onClick={()=>pickRole(r)}
+                        onMouseMove={onCardTilt} onMouseLeave={offCardTilt}
+                        style={{width:'100%',display:'flex',alignItems:'center',gap:14,padding:'12px 14px',borderRadius:16,textAlign:'left'}}>
+                        <div style={{width:40,height:40,borderRadius:12,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,
+                          background:`${meta?.color}22`,border:`1.5px solid ${meta?.color}44`}}>
+                          <Icon size={18} style={{color:meta?.color}}/>
+                        </div>
+                        <div style={{flex:1}}>
+                          <div style={{fontWeight:700,fontSize:13,color:'#fff'}}>{r}</div>
+                          <div style={{fontSize:11,color:'rgba(255,255,255,0.45)',marginTop:2}}>{roleDesc[r]}</div>
+                        </div>
+                        <ArrowRight size={14} style={{color:'rgba(255,255,255,0.25)',flexShrink:0}}/>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
 
-        {step===3 && selMember && (
-          <>
-            <button onClick={()=>setStep(2)} className="text-xs text-slate-400 hover:text-slate-700 mb-3 flex items-center gap-1"><ChevronLeft size={13}/> Back</button>
-            <p className="text-xs font-bold text-slate-500 mb-2 uppercase tracking-wider">Login as which role?</p>
-            <div className="space-y-2">
-              {parseRoles(selMember.role).map(r=>(
-                <button key={r} onClick={()=>pickRole(r)}
-                  className="w-full flex items-center gap-3 p-3 rounded-xl border-2 border-slate-200 hover:border-blue-400 hover:bg-blue-50/30 text-left transition">
-                  <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white text-xs font-bold" style={{background:rMeta(r)?.color}}>{r[0]}</div>
-                  <div className="font-bold text-sm">{r}</div>
-                  <ArrowRight size={14} className="ml-auto text-slate-300"/>
-                </button>
-              ))}
-            </div>
-          </>
-        )}
+              {/* Step 4 — Password */}
+              {step===4 && selMember && (
+                <div>
+                  <div style={{display:'flex',alignItems:'center',gap:12,padding:'10px 12px',borderRadius:12,marginBottom:20,
+                    background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.1)'}}>
+                    <div style={{position:'relative'}}>
+                      <div style={{width:40,height:40,borderRadius:12,display:'flex',alignItems:'center',justifyContent:'center',
+                        fontWeight:800,color:'#fff',fontSize:15,background:rMeta(chosenRole)?.color}}>
+                        {(selMember.name||"?")[0]}
+                      </div>
+                      <div style={{position:'absolute',bottom:-4,right:-4,width:16,height:16,borderRadius:'50%',
+                        display:'flex',alignItems:'center',justifyContent:'center',background:rMeta(chosenRole)?.color,
+                        border:'2px solid rgba(0,0,0,0.3)'}}>
+                        <Lock size={7} style={{color:'#fff'}}/>
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{fontWeight:700,fontSize:13,color:'#fff'}}>{selMember.name}</div>
+                      <div style={{fontSize:11,fontWeight:600,color:rMeta(chosenRole)?.color||'#60A5FA'}}>{chosenRole}</div>
+                    </div>
+                  </div>
 
-        {step===4 && selMember && (
-          <>
-            <button onClick={()=>setStep(parseRoles(selMember.role).length>1?3:2)} className="text-xs text-slate-400 hover:text-slate-700 mb-3 flex items-center gap-1"><ChevronLeft size={13}/> Back</button>
-            <div className="flex items-center gap-2 p-2 rounded-xl bg-slate-50 mb-4">
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white text-xs font-bold" style={{background:rMeta(chosenRole)?.color}}>{selMember.name[0]}</div>
-              <div><div className="font-bold text-sm">{selMember.name}</div><div className="text-[10px] text-slate-500">{chosenRole}</div></div>
+                  <div style={{fontSize:10,fontWeight:700,color:'rgba(255,255,255,0.45)',letterSpacing:'0.15em',textTransform:'uppercase',marginBottom:8}}>Password</div>
+                  <div className={wrong?"l-shake":""} style={{position:'relative',marginBottom:12}}>
+                    <input className="l-pin-input"
+                      type={showPin?"text":"password"} value={pin}
+                      onChange={e=>{setPin(e.target.value);setWrong(false);}}
+                      onKeyDown={e=>e.key==="Enter"&&submitPin()}
+                      placeholder="Enter your password" autoFocus
+                      style={wrong?{borderColor:'rgba(239,68,68,0.7)',background:'rgba(239,68,68,0.08)'}:{}}
+                    />
+                    <button onClick={()=>setShowPin(!showPin)}
+                      style={{position:'absolute',right:12,top:'50%',transform:'translateY(-50%)',
+                        background:'none',border:'none',cursor:'pointer',color:'rgba(255,255,255,0.4)',padding:4}}>
+                      {showPin?<EyeOff size={15}/>:<Eye size={15}/>}
+                    </button>
+                  </div>
+                  {wrong && (
+                    <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:12}}>
+                      <AlertCircle size={11} style={{color:'#F87171',flexShrink:0}}/>
+                      <span style={{fontSize:11,color:'#F87171',fontWeight:600}}>Incorrect password. Try again.</span>
+                    </div>
+                  )}
+                  {!wrong && <div style={{height:12}}/>}
+
+                  <button className="l-sign-btn" onClick={submitPin} disabled={!pin}
+                    style={{width:'100%',padding:'12px 0',borderRadius:12,
+                      background:pin?(rMeta(chosenRole)?.color?`linear-gradient(135deg,${rMeta(chosenRole).color},${rMeta(chosenRole).color}cc)`:'linear-gradient(135deg,#0d6efd,#0a58ca)'):'#334155',
+                      boxShadow:pin?`0 4px 20px ${rMeta(chosenRole)?.color||'#0d6efd'}60`:'none'}}>
+                    Sign in as {chosenRole}
+                  </button>
+                </div>
+              )}
+
             </div>
-            <p className="text-xs font-bold text-slate-500 mb-2 uppercase tracking-wider">Enter password</p>
-            <div className="relative mb-2">
-              <input type={showPin?"text":"password"} value={pin} onChange={e=>{setPin(e.target.value);setWrong(false);}} onKeyDown={e=>e.key==="Enter"&&submitPin()}
-                placeholder="Password" className="w-full py-2.5 px-3 rounded-xl border border-slate-300 text-sm pr-10" autoFocus/>
-              <button onClick={()=>setShowPin(!showPin)} className="absolute right-3 top-2.5 text-slate-400">{showPin?<EyeOff size={15}/>:<Eye size={15}/>}</button>
-            </div>
-            {wrong && <p className="text-xs text-red-500 font-semibold mb-2">Wrong password. Try again.</p>}
-            <button onClick={submitPin} className="w-full py-2.5 rounded-xl text-white font-bold text-sm" style={{background:rMeta(chosenRole)?.color||T.blue}}>Sign in</button>
-          </>
-        )}
+          </div>
+
+          {/* Footer */}
+          <div style={{textAlign:'center',marginTop:20,display:'flex',alignItems:'center',justifyContent:'center',gap:6}}>
+            <ShieldCheck size={11} style={{color:'#4ADE80'}}/>
+            <span style={{color:'rgba(255,255,255,0.3)',fontSize:11,fontWeight:500}}>Secured · Abroad Veda CRM</span>
+          </div>
+        </div>
+      </div>
+
       </div>
     </div>
   );
@@ -1477,8 +1864,8 @@ function LoginScreen({ team, security, onLogin }) {
 
 /* ════ SLOTS VIEW ════ */
 /* ════ TODAY SCHEDULE WIDGET ════ */
-function TodaySchedule({ slots, students, team, isAdmin, isBDE, onTabChange }) {
-  if (!isAdmin && !isBDE) return null;
+function TodaySchedule({ slots, students, team, isAdmin, isBDE, isManager, onTabChange }) {
+  if (!isAdmin && !isBDE && !isManager) return null;
   const today = new Date().toISOString().slice(0,10);
   const todaySlots = slots.filter(s=>s.slot_date===today);
   // Also show upcoming booked slots (next 7 days)
@@ -1561,11 +1948,13 @@ function TodaySchedule({ slots, students, team, isAdmin, isBDE, onTabChange }) {
   );
 }
 
-function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUser, memberName, onAddSlot, onBookSlot, onFreeSlot, onDeleteSlot, showAddSlot, setShowAddSlot, pendingBooking, clearPendingBooking }) {
+function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, isManager, currentUser, memberName, onAddSlot, onBookSlot, onFreeSlot, onDeleteSlot, showAddSlot, setShowAddSlot, pendingBooking, clearPendingBooking, notify }) {
   const [selDate, setSelDate]   = useState(todayStr());
   const [selCounsellor, setSelCounsellor] = useState("all");
   const [bookingSlot, setBookingSlot] = useState(null);
   const [bookStudentId, setBookStudentId] = useState("");
+  const [reschedDate, setReschedDate] = useState(todayStr());
+  const [reschedTime, setReschedTime] = useState("11:00");
   // BDE quick-book flow state
   const [bdeStep, setBdeStep] = useState(1); // 1=pick counsellor+date, 2=pick slot, 3=confirm
   const [bdeCounsellor, setBdeCounsellor] = useState("");
@@ -1602,7 +1991,7 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
   };
 
   // Counsellor sees only their own schedule
-  // BDE and Admin see all counsellors
+  // BDE, Admin, and Manager see all counsellors
   const displayCounsellors = isCounsel
     ? counsellors.filter(c=>c.id===currentUser.id)
     : selCounsellor==="all" ? counsellors : counsellors.filter(c=>c.id===selCounsellor);
@@ -1636,12 +2025,14 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
     if (bookingSlot.isRebook && bookingSlot.slotId) {
       await onFreeSlot(bookingSlot.slotId);
     }
+    // For reschedule, use the picker values; for new bookings use the schedule date/time
+    const targetDate = bookingSlot.isRebook ? reschedDate : selDate;
+    const targetTime = bookingSlot.isRebook ? reschedTime : bookingSlot.time;
     let slotId = bookingSlot.isRebook ? null : bookingSlot.slotId;
     if (!slotId) {
-      // create new slot then book — inject counsellor_id into slot before booking
-      await onAddSlot({ counsellor_id:bookingSlot.counsellorId, slot_date:selDate, slot_time:bookingSlot.time, status:"available" });
+      await onAddSlot({ counsellor_id:bookingSlot.counsellorId, slot_date:targetDate, slot_time:targetTime, status:"available" });
       await new Promise(r=>setTimeout(r,1000));
-      const fresh = slots.find(s=>s.counsellor_id===bookingSlot.counsellorId&&s.slot_date===selDate&&s.slot_time===bookingSlot.time);
+      const fresh = slots.find(s=>s.counsellor_id===bookingSlot.counsellorId&&s.slot_date===targetDate&&s.slot_time===targetTime);
       if (fresh) slotId = fresh.id;
     }
     if (slotId) {
@@ -1716,7 +2107,7 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
             return(
               <div className="space-y-4">
                 <div className="flex items-center gap-3 p-3 rounded-xl" style={{background:T.teal+"12"}}>
-                  <div className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-white text-sm" style={{background:T.blue}}>{cName[0]}</div>
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-white text-sm" style={{background:T.blue}}>{(cName||"?")[0]}</div>
                   <div><div className="font-bold text-sm">{cName}</div><div className="text-xs text-slate-500">{fmtDate(bdeDate)}</div></div>
                   <button onClick={()=>setBdeStep(1)} className="ml-auto text-xs font-semibold text-slate-400 hover:text-slate-600">← Change</button>
                 </div>
@@ -1729,6 +2120,13 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
                     const isAvail=existing?.status==="available";
                     const isFree=!existing;
                     const isPicked=bdePickedSlot?.time===time;
+                    const isPast=bdeDate===todayStr()&&time<=currentISTHour();
+                    if(isPast&&!isBooked) return(
+                      <div key={time} className="rounded-xl border-2 p-2.5 text-center opacity-40 cursor-not-allowed" style={{borderColor:"#E2E8F0",background:"#F8FAFC"}}>
+                        <div className="text-sm font-extrabold text-slate-400">{time}</div>
+                        <div className="text-[9px] font-bold text-slate-400 mt-0.5">Past</div>
+                      </div>
+                    );
                     if(isBooked){
                       const bookedSt=students.find(s=>s.id===existing.booked_by);
                       const bookedName = bookedSt?.name || existing.student?.name || "Student";
@@ -1788,18 +2186,30 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
                   <div className="flex items-center gap-2 text-sm font-semibold"><span className="text-slate-400">Time:</span><span style={{color:T.teal}}>{bdePickedSlot?.time} — 1 hour session</span></div>
                 </div>
 
-                <label className="block text-xs font-semibold text-slate-500">Select your student *
-                  <select value={bdeStudent} onChange={e=>setBdeStudent(e.target.value)} style={inp}>
-                    <option value="">-- Select student to book --</option>
-                    {myStudents.map(s=>(
-                      <option key={s.id} value={s.id}>{s.name} · {s.phone} · {s.country}</option>
-                    ))}
-                  </select>
-                  {myStudents.length===0&&<p className="text-[11px] text-orange-600 mt-1">No leads found. Add students first from the Students tab.</p>}
-                </label>
+                {bdeStudent ? (
+                  <div className="flex items-center gap-3 p-3 rounded-xl border-2" style={{borderColor:T.teal,background:T.teal+"0D"}}>
+                    <div className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-white text-sm shrink-0" style={{background:T.teal}}>{(students.find(s=>s.id===bdeStudent)?.name||"?")[0]}</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[10px] font-bold uppercase tracking-wider" style={{color:T.teal}}>Booking for</div>
+                      <div className="font-bold text-sm truncate">{students.find(s=>s.id===bdeStudent)?.name}</div>
+                      <div className="text-[11px] text-slate-400">{students.find(s=>s.id===bdeStudent)?.phone}</div>
+                    </div>
+                    <button onClick={()=>setBdeStudent("")} className="text-xs font-semibold text-slate-400 hover:text-red-500 shrink-0">Change</button>
+                  </div>
+                ) : (
+                  <label className="block text-xs font-semibold text-slate-500">Select your student *
+                    <select value={bdeStudent} onChange={e=>setBdeStudent(e.target.value)} style={inp}>
+                      <option value="">-- Select student to book --</option>
+                      {myStudents.map(s=>(
+                        <option key={s.id} value={s.id}>{s.name} · {s.phone} · {s.country}</option>
+                      ))}
+                    </select>
+                    {myStudents.length===0&&<p className="text-[11px] text-orange-600 mt-1">No leads found. Add students first from the Students tab.</p>}
+                  </label>
+                )}
 
                 <div className="flex gap-3">
-                  <button onClick={()=>{setBdeStep(2);setBdeStudent("");}} className="flex-1 py-2.5 rounded-xl border font-semibold text-sm text-slate-600" style={{borderColor:T.line}}>← Back</button>
+                  <button onClick={()=>setBdeStep(2)} className="flex-1 py-2.5 rounded-xl border font-semibold text-sm text-slate-600" style={{borderColor:T.line}}>← Back</button>
                   <button
                     disabled={!bdeStudent||bdeBooking}
                     onClick={async()=>{
@@ -1847,7 +2257,7 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
             {counsellors.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
-        {(isAdmin||isCounsel) && (
+        {(isAdmin||isCounsel||isManager) && (
           <button onClick={()=>setShowAddSlot(true)} className="flex items-center gap-2 px-3 py-2 rounded-xl text-white text-sm font-semibold ml-auto" style={{background:T.blue}}><Plus size={14}/> Mark available</button>
         )}
       </div>}
@@ -1870,7 +2280,7 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
       {!isBDE && displayCounsellors.map(c=>(
         <div key={c.id} className="card p-4">
           <div className="flex items-center gap-3 mb-4">
-            <div className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-white text-sm" style={{background:T.blue}}>{c.name[0]}</div>
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-white text-sm" style={{background:T.blue}}>{(c.name||"?")[0]}</div>
             <div>
               <div className="font-bold text-sm">{c.name}</div>
               <div className="text-[11px] text-slate-400">{c.country&&c.country!=="—"?c.country+" desk ·":""} {fmtDate(selDate)}</div>
@@ -1884,6 +2294,13 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
               const { type, slot } = getSlotStatus(c.id, selDate, time);
               const label = SLOT_LABELS[time];
               const bookedStudentName = slot?.booked_by ? (studentName(slot.booked_by) || slot?.student?.name || "") : "";
+              const isPast = selDate===todayStr() && time<=currentISTHour();
+              if(isPast && type!=="booked") return (
+                <div key={time} className="rounded-xl border-2 p-2 text-center opacity-40" style={{borderColor:"#E2E8F0",background:"#F8FAFC"}}>
+                  <div className="text-sm font-extrabold num text-slate-400">{time}</div>
+                  <div className="text-[9px] text-slate-400 mt-0.5">Past</div>
+                </div>
+              );
               return (
                 <div key={time} className="rounded-xl border-2 p-2 text-center transition"
                   style={{
@@ -1896,20 +2313,22 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
                     <div>
                       <div className="text-[9px] font-bold text-red-700 mt-1 truncate" title={bookedStudentName}>{bookedStudentName||"Booked"}</div>
                       <div className="flex flex-col gap-1 mt-1">
-                    {(isAdmin||isBDE) && <button onClick={()=>{
+                    {(isAdmin||isBDE||isManager||isCounsel) && <button onClick={()=>{
                       setBookingSlot({ slotId:slot.id, time, label:SLOT_LABELS[time]||time, counsellorName:c.name, counsellorId:c.id, isRebook:true, currentStudentId:slot.booked_by });
                       setBookStudentId(slot.booked_by||"");
+                      setReschedDate(selDate);
+                      setReschedTime(time);
                     }} className="text-[9px] font-bold px-1 py-1 rounded border text-blue-600 border-blue-200 bg-blue-50 w-full">
-                      Change slot
+                      Reschedule
                     </button>}
                     <button onClick={()=>{
-                      if(window.confirm(`Cancel booking for ${bookedName||"this student"}?`)){
+                      if(window.confirm(`Cancel booking for ${bookedStudentName||"this student"}?`)){
                         onFreeSlot(slot.id);
                       }
                     }} className="text-[9px] font-bold px-1 py-1 rounded border text-orange-600 border-orange-200 bg-orange-50 w-full">
                       Cancel
                     </button>
-                    {isAdmin && <button onClick={()=>{
+                    {(isAdmin||isManager) && <button onClick={()=>{
                       if(window.confirm("Delete this slot permanently?")){
                         onDeleteSlot(slot.id);
                       }
@@ -1926,7 +2345,7 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
                         style={{background:type==="available"?T.blue:"#22C55E"}}>
                         {isBDE?"Book":"Set"}
                       </button>
-                      {(isAdmin||isCounsel) && slot && <button
+                      {(isAdmin||isCounsel||isManager) && slot && <button
                         onClick={()=>{if(window.confirm("Delete this slot?")) onDeleteSlot(slot.id);}}
                         className="text-[9px] font-bold px-1.5 py-1 rounded-lg border text-red-500 border-red-200 bg-red-50">
                         ✕
@@ -1940,39 +2359,69 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
         </div>
       ))}
 
-      {/* BDE Booking confirmation modal */}
+      {/* Booking / Reschedule modal */}
       {bookingSlot && (
-        <AppModal title={bookingSlot?.isRebook ? "Change counselling slot" : "Book counselling slot"} onClose={()=>setBookingSlot(null)}>
+        <AppModal title={bookingSlot?.isRebook ? "Reschedule counselling slot" : "Book counselling slot"} onClose={()=>setBookingSlot(null)}>
           <div className="space-y-3">
-            <div className="p-3 rounded-xl" style={{background:T.teal+"15"}}>
-              <div className="font-bold text-sm" style={{color:T.teal}}>{bookingSlot.counsellorName}</div>
-              <div className="text-xs text-slate-600 mt-0.5">{fmtDate(selDate)} · {bookingSlot.label}</div>
+            {/* Counsellor info */}
+            <div className="p-3 rounded-xl flex items-center gap-3" style={{background:T.blue+"0D",border:`1px solid ${T.blue}33`}}>
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-white text-xs shrink-0" style={{background:T.blue}}>{(bookingSlot.counsellorName||"?")[0]}</div>
+              <div><div className="font-bold text-sm">{bookingSlot.counsellorName}</div><div className="text-[11px] text-slate-400">Counsellor</div></div>
             </div>
-            <label className="block text-xs font-semibold text-slate-500">
-              Select student for this counselling slot *
-              <select value={bookStudentId} onChange={e=>setBookStudentId(e.target.value)} style={inp} autoFocus>
-                <option value="">-- Select student --</option>
-                {students
-                  .filter(s=>isBDE ? s.bde_id===currentUser.id : true)
-                  .map(s=><option key={s.id} value={s.id}>{s.name} — {s.phone}</option>)}
-              </select>
-              <span className="text-[11px] text-slate-400 mt-0.5 block">This student will be linked to the counselling session</span>
-            </label>
-            <p className="text-[11px] text-slate-400">After booking, the slot will show as <strong>Booked</strong> and the student will be linked to this session.</p>
+
+            {/* Reschedule: new date + time pickers */}
+            {bookingSlot.isRebook ? (
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block text-xs font-semibold text-slate-500">New date *
+                  <input type="date" value={reschedDate} onChange={e=>setReschedDate(e.target.value)} min={todayStr()} style={{...inp,marginTop:4}}/>
+                </label>
+                <label className="block text-xs font-semibold text-slate-500">New time *
+                  <select value={reschedTime} onChange={e=>setReschedTime(e.target.value)} style={{...inp,marginTop:4}}>
+                    {SLOT_TIMES.map(t=><option key={t} value={t}>{SLOT_LABELS[t]}</option>)}
+                  </select>
+                </label>
+              </div>
+            ) : (
+              <div className="p-2 rounded-xl text-xs font-semibold text-slate-500" style={{background:"#F8FAFC"}}>
+                {fmtDate(selDate)} · {bookingSlot.label}
+              </div>
+            )}
+
+            {/* Student — show card if pre-filled, dropdown if not */}
+            {bookStudentId ? (
+              <div className="flex items-center gap-3 p-3 rounded-xl border-2" style={{borderColor:T.teal,background:T.teal+"0D"}}>
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-white text-xs shrink-0" style={{background:T.teal}}>{(students.find(s=>s.id===bookStudentId)?.name||"?")[0]}</div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-[10px] font-bold uppercase tracking-wider" style={{color:T.teal}}>Student</div>
+                  <div className="font-bold text-sm truncate">{students.find(s=>s.id===bookStudentId)?.name}</div>
+                  <div className="text-[11px] text-slate-400">{students.find(s=>s.id===bookStudentId)?.phone}</div>
+                </div>
+                {!bookingSlot.isRebook && <button onClick={()=>setBookStudentId("")} className="text-xs font-semibold text-slate-400 hover:text-red-500">Change</button>}
+              </div>
+            ) : (
+              <label className="block text-xs font-semibold text-slate-500">
+                Select student *
+                <select value={bookStudentId} onChange={e=>setBookStudentId(e.target.value)} style={inp} autoFocus>
+                  <option value="">-- Select student --</option>
+                  {students
+                    .filter(s=>(isBDE && !isManager) ? s.bde_id===currentUser.id : true)
+                    .map(s=><option key={s.id} value={s.id}>{s.name} — {s.phone}</option>)}
+                </select>
+              </label>
+            )}
           </div>
-          <p className="text-xs text-slate-400 mt-2">Student must be selected to confirm booking.</p>
-        <button onClick={confirmBook} disabled={!bookStudentId} className="mt-2 w-full py-2.5 rounded-xl text-white font-bold text-sm disabled:opacity-40" style={{background:T.teal}}>
-          {bookingSlot?.isRebook ? "Change booking" : "Confirm booking"}
-        </button>
+          <button onClick={confirmBook} disabled={!bookStudentId} className="mt-4 w-full py-2.5 rounded-xl text-white font-bold text-sm disabled:opacity-40" style={{background:T.teal}}>
+            {bookingSlot?.isRebook ? "✓ Confirm reschedule" : "✓ Confirm booking"}
+          </button>
         </AppModal>
       )}
 
       {/* Admin: mark a slot as available */}
-      {showAddSlot && (isAdmin||isCounsel) && (
+      {showAddSlot && (isAdmin||isCounsel||isManager) && (
         <AppModal title="Mark slot as available" onClose={()=>setShowAddSlot(false)}>
           <p className="text-xs text-slate-500 mb-3">This marks a time slot as available so BDEs can book it for students. If you don't mark slots, BDEs can still book free slots directly.</p>
           <div className="space-y-3">
-            {isAdmin && (
+            {(isAdmin||isManager) && (
               <label className="block text-xs font-semibold text-slate-500">Counsellor
                 <select value={selCounsellor==="all"?"":selCounsellor} onChange={e=>setSelCounsellor(e.target.value)} style={inp}>
                   <option value="">Select counsellor…</option>
@@ -2005,7 +2454,7 @@ function SlotsView({ slots, team, students, isAdmin, isBDE, isCounsel, currentUs
 
 
 /* ════ STUDENT DETAIL ════ */
-function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmin, isBDE, isCounsel, isVisa, slots, onBack, onUpdate, onMove, onAssignBDE, onAssignCounsellor, onAddNote, onDeleteNote, onUpdateNote, onBookSlot, onFreeSlot, onDeleteStudent, onAddApp, onUpdateApp, onDeleteApp, onCycleDoc, onAddDoc, onDeleteDoc }) {
+function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmin, isBDE, isCounsel, isVisa, isManager, slots, onBack, onUpdate, onMove, onAssignBDE, onAssignCounsellor, onAddNote, onDeleteNote, onUpdateNote, onBookSlot, onFreeSlot, onDeleteStudent, onAddApp, onUpdateApp, onDeleteApp, onCycleDoc, onAddDoc, onDeleteDoc }) {
   const initTab = isBDE?"calls":isCounsel?"session":"overview";
   const [ptab,setPtab]       = useState(initTab);
   const [noteText,setNoteText] = useState("");
@@ -2024,7 +2473,7 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
   const callLogs    = allNotes.filter(n=>n.text?.startsWith("📞"));
   const sessionLogs = allNotes.filter(n=>n.text?.startsWith("🎓"));
   const otherNotes  = allNotes.filter(n=>!n.text?.startsWith("📞")&&!n.text?.startsWith("🎓")&&!n.text?.startsWith("✅"));
-  const canAdvance  = isAdmin||isCounsel||isVisa;
+  const canAdvance  = isAdmin||isCounsel||isVisa||isManager;
 
   const availableSlots = slots.filter(sl=>sl.status==="available"&&sl.slot_date>=todayStr());
 
@@ -2062,8 +2511,8 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
   };
 
   const TABS = [
-    ...(isBDE||isAdmin?[["calls",`Calls (${callLogs.length})`]]:[]),
-    ...(isCounsel||isAdmin?[["session",`Sessions (${sessionLogs.length})`]]:[]),
+    ...(isBDE||isAdmin||isManager?[["calls",`Calls (${callLogs.length})`]]:[]),
+    ...(isCounsel||isAdmin||isManager?[["session",`Sessions (${sessionLogs.length})`]]:[]),
     ["overview","Overview"],
     ["apps",`Applications (${apps.length})`],
     ["docs","Documents"],
@@ -2071,123 +2520,164 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
   ];
 
   return (
-    <div className="space-y-4">
-      <button onClick={onBack} className="flex items-center gap-1 text-sm font-semibold text-slate-500 hover:text-slate-800"><ChevronLeft size={16}/> All students</button>
+    <div className="space-y-3">
+      {/* Back + delete row */}
+      <div className="flex items-center justify-between">
+        <button onClick={onBack} className="flex items-center gap-1 text-sm font-semibold text-slate-500 hover:text-slate-800 transition-colors">
+          <ChevronLeft size={16}/> All students
+        </button>
+        {(isAdmin||isManager) && (
+          <button onClick={()=>{if(window.confirm(`Delete ${s.name}?`)) onDeleteStudent(s.id);}}
+            className="flex items-center gap-1.5 text-xs font-semibold text-red-400 hover:text-red-600 hover:bg-red-50 px-3 py-1.5 rounded-xl transition-colors">
+            <Trash2 size={13}/> Delete
+          </button>
+        )}
+      </div>
 
-      {/* Header card */}
-      <div className="card p-5">
-        <div className="flex flex-wrap items-start gap-4">
-          <div className="w-12 h-12 rounded-2xl flex items-center justify-center font-extrabold text-white text-lg shrink-0" style={{background:st.color}}>{s.name[0]}</div>
-          <div className="flex-1 min-w-[180px]">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-xl font-extrabold">{s.name}</h1>
-              <span className="text-[10px] font-bold text-slate-400">AV-{s.id.toString().toUpperCase().slice(0,8)}</span>
-            </div>
-            <div className="text-xs text-slate-500 flex flex-wrap gap-3 mt-1">
-              <span className="flex items-center gap-1 num"><Phone size={12}/> {s.phone}</span>
-              <span className="flex items-center gap-1"><Mail size={12}/> {s.email||"—"}</span>
-              <span className="flex items-center gap-1"><Globe2 size={12}/> {s.level} · {s.country} · {s.intake}</span>
-            </div>
-            <div className="flex flex-wrap gap-2 mt-2">
-              {s.bde_id && <span className="flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg" style={{background:T.teal+"15",color:T.teal}}><Briefcase size={11}/> BDE: {memberName(s.bde_id)}</span>}
-              {counsellors.find(c=>c.id===s.assigned_to) && <span className="flex items-center gap-1 text-[11px] font-semibold px-2 py-1 rounded-lg" style={{background:T.blue+"15",color:T.blue}}><Users size={11}/> CNS: {memberName(s.assigned_to)}</span>}
-              {!s.bde_id && !counsellors.find(c=>c.id===s.assigned_to) && <span className="text-[11px] text-red-500 font-semibold">Unassigned</span>}
-            </div>
-            {/* Qual buttons */}
-            <div className="flex items-center gap-1.5 mt-2 flex-wrap">
-              <span className="text-[10px] font-semibold text-slate-400">Qual:</span>
-              {["Hot","Warm","Cold"].map(q=>(
-                <button key={q} onClick={()=>(isAdmin||isBDE)&&onUpdate(s.id,{qualification:q})}
-                  className="text-[10px] font-bold px-2 py-0.5 rounded-full border transition"
-                  style={s.qualification===q?{background:qualColor(q),color:"#fff",borderColor:qualColor(q)}:{background:"#fff",color:qualColor(q),borderColor:qualColor(q)+"66"}}>{q}</button>
-              ))}
-            </div>
+      {/* ── Hero identity card ── */}
+      <div className="card overflow-hidden">
+        {/* Coloured top strip */}
+        <div className="h-1.5 w-full" style={{background:`linear-gradient(90deg,${st.color},${st.color}88)`}}/>
 
-            {/* Big action buttons — phone & PC friendly */}
-            <div className="flex flex-wrap gap-2 mt-4">
-              <a href={`tel:${telNum(s.phone)}`} className="call-btn" style={{background:T.blue,color:"#fff"}}><PhoneCall size={16}/> Call</a>
-              <a href={`https://wa.me/${String(s.phone||"").replace(/[^0-9]/g,"")}`} target="_blank" rel="noreferrer" className="call-btn" style={{background:"#25D366",color:"#fff"}}><MessageCircle size={16}/> WhatsApp</a>
-              {(isBDE||isAdmin) && <button onClick={()=>setShowCallModal(true)} className="call-btn" style={{background:T.saffron,color:"#fff"}}><PhoneCall size={16}/> Log call</button>}
-              {(isCounsel||isAdmin) && <button onClick={()=>setShowSessionModal(true)} className="call-btn" style={{background:T.purple,color:"#fff"}}><Video size={16}/> Log session</button>}
+        <div className="p-5">
+          {/* Identity row */}
+          <div className="flex items-start gap-4">
+            <div className="w-14 h-14 rounded-2xl flex items-center justify-center font-extrabold text-white text-2xl shrink-0 shadow-sm" style={{background:st.color}}>
+              {(s.name||"?")[0]}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex flex-wrap items-baseline gap-2 mb-0.5">
+                <h1 className="text-xl font-extrabold leading-tight">{s.name}</h1>
+                <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">AV-{s.id.toString().toUpperCase().slice(0,8)}</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-500">
+                <span className="flex items-center gap-1 font-medium num"><Phone size={11}/>{s.phone}</span>
+                {s.email && <span className="flex items-center gap-1"><Mail size={11}/>{s.email}</span>}
+                <span className="flex items-center gap-1"><Globe2 size={11}/>{s.level} · {s.country} · {s.intake}</span>
+              </div>
+              {/* Team + Qual row */}
+              <div className="flex flex-wrap items-center gap-2 mt-2">
+                {s.bde_id && <span className="flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full" style={{background:T.teal+"15",color:T.teal}}><Briefcase size={10}/>{memberName(s.bde_id)}</span>}
+                {counsellors.find(c=>c.id===s.assigned_to) && <span className="flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full" style={{background:T.blue+"15",color:T.blue}}><GraduationCap size={10}/>{memberName(s.assigned_to)}</span>}
+                {!s.bde_id && !counsellors.find(c=>c.id===s.assigned_to) && <span className="text-[11px] font-semibold text-red-400 bg-red-50 px-2 py-0.5 rounded-full">Unassigned</span>}
+                <div className="flex items-center gap-1 ml-auto">
+                  {["Hot","Warm","Cold"].map(q=>(
+                    <button key={q} onClick={()=>(isAdmin||isBDE||isManager)&&onUpdate(s.id,{qualification:q})}
+                      className="text-[10px] font-bold px-2 py-0.5 rounded-full border transition-all"
+                      style={s.qualification===q?{background:qualColor(q),color:"#fff",borderColor:qualColor(q)}:{background:"transparent",color:qualColor(q),borderColor:qualColor(q)+"55"}}>{q}</button>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
-          {isAdmin && (
-            <button onClick={()=>{if(window.confirm(`Delete ${s.name}?`)) onDeleteStudent(s.id);}} className="p-2 rounded-xl hover:bg-red-100 text-slate-300 hover:text-red-600 shrink-0"><Trash2 size={16}/></button>
-          )}
-        </div>
 
-        {/* Admin assignment panel */}
-        {isAdmin && (
-          <div className="mt-4 grid sm:grid-cols-2 gap-3">
-            <div className="p-3 rounded-xl border" style={{borderColor:T.teal+"55",background:T.teal+"08"}}>
-              <label className="text-xs font-bold flex items-center gap-1.5 mb-2" style={{color:T.teal}}><Briefcase size={12}/> BDE</label>
-              <div className="flex gap-2">
-                <select value={s.bde_id||""} onChange={e=>e.target.value&&onAssignBDE(s.id,e.target.value)} className="flex-1 py-2 px-2 rounded-xl border text-sm bg-white font-medium" style={{borderColor:T.line}}>
+          {/* Action buttons */}
+          <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t" style={{borderColor:"#F1F5F9"}}>
+            <a href={`tel:${telNum(s.phone)}`} className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-bold text-white transition-all hover:opacity-90 active:scale-95" style={{background:T.blue}}><PhoneCall size={14}/> Call</a>
+            <a href={`https://wa.me/${String(s.phone||"").replace(/[^0-9]/g,"")}`} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-bold text-white transition-all hover:opacity-90 active:scale-95" style={{background:"#25D366"}}><MessageCircle size={14}/> WhatsApp</a>
+            {(isBDE||isAdmin||isManager) && <button onClick={()=>setShowCallModal(true)} className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-bold text-white transition-all hover:opacity-90 active:scale-95" style={{background:T.saffron}}><PhoneCall size={14}/> Log call</button>}
+            {(isCounsel||isAdmin||isManager) && <button onClick={()=>setShowSessionModal(true)} className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-bold text-white transition-all hover:opacity-90 active:scale-95" style={{background:T.purple}}><Video size={14}/> Log session</button>}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Stage pipeline card ── */}
+      <div className="card p-4">
+        <div className="flex gap-1 mb-3">
+          {STAGES.map((stg,idx)=>(
+            <button key={stg.id} onClick={()=>(isAdmin||isManager)&&onUpdate(s.id,{stage:stg.id})} disabled={!(isAdmin||isManager)}
+              title={stg.label} className="h-2 rounded-full flex-1 min-w-[16px] transition-all"
+              style={{background:idx<=i?stg.color:"#E8EDF5"}}/>
+          ))}
+        </div>
+        <div className="flex items-center justify-between">
+          <button onClick={()=>onMove(s.id,-1)} disabled={i===0||!canAdvance}
+            className="flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg border disabled:opacity-30 hover:bg-slate-50 transition-colors"
+            style={{borderColor:"#E2E8F0"}}>
+            <ChevronLeft size={13}/> Back
+          </button>
+          <div className="flex items-center gap-1.5">
+            <div className="w-2 h-2 rounded-full" style={{background:st.color}}/>
+            <span className="text-sm font-bold" style={{color:st.color}}>{st.label}</span>
+            <span className="text-[11px] text-slate-400">· stage {i+1}/{STAGES.length}</span>
+          </div>
+          <button onClick={()=>onMove(s.id,1)} disabled={i===STAGES.length-1||!canAdvance}
+            className="flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg text-white disabled:opacity-30 hover:opacity-90 transition-opacity"
+            style={{background:T.blue}}>
+            Advance <ChevronRight size={13}/>
+          </button>
+        </div>
+      </div>
+
+      {/* ── Assignment + follow-up row ── */}
+      <div className="card p-4">
+        {/* Admin / Manager: BDE + Counsellor selectors */}
+        {(isAdmin||isManager) && (
+          <div className="grid sm:grid-cols-3 gap-3 mb-3 pb-3 border-b" style={{borderColor:"#F1F5F9"}}>
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-wider mb-1.5" style={{color:T.teal}}>BDE</div>
+              <div className="flex gap-1.5">
+                <select value={s.bde_id||""} onChange={e=>e.target.value&&onAssignBDE(s.id,e.target.value)}
+                  className="flex-1 py-1.5 px-2 rounded-lg border text-xs bg-white font-semibold" style={{borderColor:"#E2E8F0"}}>
                   <option value="">{s.bde_id?memberName(s.bde_id):"No BDE"}</option>
                   {bdeList.map(t=><option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
-                {s.bde_id && <button onClick={()=>{if(window.confirm("Remove BDE?")) onAssignBDE(s.id,"remove");}} className="px-2 py-1 rounded-xl border text-xs font-bold text-red-500" style={{borderColor:"#FECACA"}}>Remove</button>}
+                {s.bde_id && <button onClick={()=>{if(window.confirm("Remove BDE?")) onAssignBDE(s.id,"remove");}} className="px-2 rounded-lg border text-[10px] font-bold text-red-400 hover:bg-red-50" style={{borderColor:"#FECACA"}}>✕</button>}
               </div>
             </div>
-            <div className="p-3 rounded-xl border" style={{borderColor:T.blue+"55",background:T.blue+"08"}}>
-              <label className="text-xs font-bold flex items-center gap-1.5 mb-2" style={{color:T.blue}}><Users size={12}/> Counsellor</label>
-              <select value={counsellors.find(c=>c.id===s.assigned_to)?s.assigned_to:""} onChange={e=>e.target.value&&onAssignCounsellor(s.id,e.target.value)} className="w-full py-2 px-2 rounded-xl border text-sm bg-white font-medium" style={{borderColor:T.line}}>
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-wider mb-1.5" style={{color:T.blue}}>Counsellor</div>
+              <select value={counsellors.find(c=>c.id===s.assigned_to)?s.assigned_to:""} onChange={e=>e.target.value&&onAssignCounsellor(s.id,e.target.value)}
+                className="w-full py-1.5 px-2 rounded-lg border text-xs bg-white font-semibold" style={{borderColor:"#E2E8F0"}}>
                 <option value="">{counsellors.find(c=>c.id===s.assigned_to)?.name||"Select counsellor…"}</option>
                 {counsellors.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             </div>
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Follow-up date</div>
+              <input type="date" value={s.follow_up||""} onChange={e=>onUpdate(s.id,{follow_up:e.target.value})}
+                className="w-full py-1.5 px-2 rounded-lg border text-xs font-semibold" style={{borderColor:"#E2E8F0"}}/>
+            </div>
           </div>
         )}
 
-        {/* BDE can also assign counsellor directly — no admin needed */}
+        {/* BDE: counsellor assignment */}
         {isBDE && (
-          <div className="mt-4 p-3 rounded-xl border" style={{borderColor:T.blue+"55",background:T.blue+"08"}}>
-            <label className="text-xs font-bold flex items-center gap-1.5 mb-2" style={{color:T.blue}}>
-              <Users size={12}/> Assign counsellor
-              <span className="ml-1 text-[10px] font-normal text-slate-400">— no admin approval needed</span>
-            </label>
+          <div className="mb-3 pb-3 border-b" style={{borderColor:"#F1F5F9"}}>
+            <div className="text-[10px] font-bold uppercase tracking-wider mb-1.5" style={{color:T.blue}}>Counsellor</div>
             {counsellors.find(c=>c.id===s.assigned_to) ? (
               <div className="flex items-center gap-2">
-                <span className="text-sm font-semibold flex-1" style={{color:T.blue}}>✓ {memberName(s.assigned_to)} assigned</span>
-                <select defaultValue="" onChange={e=>e.target.value&&onAssignCounsellor(s.id,e.target.value)} className="py-1.5 px-2 rounded-xl border text-xs bg-white font-medium" style={{borderColor:T.line}}>
-                  <option value="">Change counsellor…</option>
+                <span className="flex items-center gap-1.5 text-sm font-semibold flex-1" style={{color:T.blue}}>
+                  <GraduationCap size={13}/>{memberName(s.assigned_to)} assigned
+                </span>
+                <select defaultValue="" onChange={e=>e.target.value&&onAssignCounsellor(s.id,e.target.value)}
+                  className="py-1.5 px-2 rounded-lg border text-xs bg-white font-semibold" style={{borderColor:"#E2E8F0"}}>
+                  <option value="">Change…</option>
                   {counsellors.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
               </div>
             ) : (
-              <select defaultValue="" onChange={e=>e.target.value&&onAssignCounsellor(s.id,e.target.value)} className="w-full py-2 px-2 rounded-xl border text-sm bg-white font-medium" style={{borderColor:T.line}}>
-                <option value="">Select counsellor to assign…</option>
+              <select defaultValue="" onChange={e=>e.target.value&&onAssignCounsellor(s.id,e.target.value)}
+                className="w-full py-1.5 px-2 rounded-lg border text-xs bg-white font-semibold" style={{borderColor:"#E2E8F0"}}>
+                <option value="">Select counsellor…</option>
                 {counsellors.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             )}
           </div>
         )}
 
-        {/* Journey bar */}
-        <div className="mt-5">
-          <div className="flex gap-1 overflow-x-auto pb-1">
-            {STAGES.map((stg,idx)=>(
-              <button key={stg.id} onClick={()=>isAdmin&&onUpdate(s.id,{stage:stg.id})} disabled={!isAdmin} title={stg.label} className="h-2.5 rounded-full flex-1 min-w-[20px] transition" style={{background:idx<=i?stg.color:"#E2E8F0"}}/>
-            ))}
+        {/* Follow-up for non-admin roles */}
+        {!isAdmin && !isManager && (
+          <div className="flex items-center gap-3">
+            <Calendar size={13} className="text-slate-400 shrink-0"/>
+            <div className="flex-1">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-0.5">Next follow-up</div>
+              <input type="date" value={s.follow_up||""} onChange={e=>onUpdate(s.id,{follow_up:e.target.value})}
+                className="py-1 px-0 text-xs font-semibold bg-transparent border-none outline-none" style={{color:s.follow_up?T.blue:"#94A3B8"}}/>
+            </div>
+            {s.follow_up && <span className="text-[11px] font-semibold px-2 py-1 rounded-lg" style={{background:T.blue+"10",color:T.blue}}>{fmtDate(s.follow_up)}</span>}
           </div>
-          <div className="flex items-center justify-between mt-2">
-            <button onClick={()=>onMove(s.id,-1)} disabled={i===0||!canAdvance} className="text-xs font-semibold px-3 py-1.5 rounded-lg border disabled:opacity-30" style={{borderColor:"#E5EAF3"}}>← Back</button>
-            <span className="text-sm font-bold" style={{color:st.color}}><BadgeCheck size={14} className="inline mr-1"/>{st.label}</span>
-            <button onClick={()=>onMove(s.id,1)} disabled={i===STAGES.length-1||!canAdvance} className="text-xs font-semibold px-3 py-1.5 rounded-lg text-white disabled:opacity-30" style={{background:T.blue}}>Advance →</button>
-          </div>
-        </div>
-
-        <div className="grid sm:grid-cols-2 gap-4 mt-4">
-          <label className="text-xs font-semibold text-slate-500">Assigned to
-            <select value={s.assigned_to||""} onChange={e=>isAdmin&&onUpdate(s.id,{assigned_to:e.target.value})} disabled={!isAdmin} style={inp}>
-              <option value="">Unassigned</option>
-              {team.map(t=><option key={t.id} value={t.id}>{t.name} ({primaryRole(t)})</option>)}
-            </select>
-          </label>
-          <label className="text-xs font-semibold text-slate-500">Next follow-up
-            <input type="date" value={s.follow_up||""} onChange={e=>onUpdate(s.id,{follow_up:e.target.value})} style={inp}/>
-          </label>
-        </div>
+        )}
       </div>
 
       {/* Call modal */}
@@ -2302,7 +2792,7 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
               const callback=lines.find(l=>l.startsWith("Callback:"))?.slice(10);
               const booked=lines.some(l=>l.includes("Counselling"));
               return (
-                <div key={idx} className="border rounded-xl p-3" style={{borderColor:T.line}}>
+                <div key={n.id||idx} className="border rounded-xl p-3" style={{borderColor:T.line}}>
                   <div className="flex items-center gap-2">
                     <PhoneCall size={13} style={{color:booked?T.teal:T.blue}}/>
                     <span className="text-xs font-bold flex-1" style={{color:booked?T.teal:T.blue}}>{outcome}</span>
@@ -2372,7 +2862,7 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
               <input value={noteText} onChange={e=>setNoteText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&noteText.trim()){onAddNote(s.id,noteText);setNoteText("");}}} placeholder="Add a quick note…" className="flex-1 py-2 px-3 rounded-xl border text-sm" style={{borderColor:"#CBD5E1"}}/>
               <button onClick={()=>{if(noteText.trim()){onAddNote(s.id,noteText);setNoteText("");}}} className="px-3 rounded-xl text-white text-sm font-semibold" style={{background:T.blue}}>Add</button>
             </div>
-            {otherNotes.slice(0,3).map((n,idx)=>(<div key={idx} className="text-xs text-slate-500 border-l-2 pl-2 py-0.5 truncate" style={{borderColor:"#0d6efd55"}}>{n.text}</div>))}
+            {otherNotes.slice(0,3).map((n,idx)=>(<div key={n.id||idx} className="text-xs text-slate-500 border-l-2 pl-2 py-0.5 truncate" style={{borderColor:"#0d6efd55"}}>{n.text}</div>))}
           </div>
           <div className="card p-5 space-y-3">
             <h2 className="font-bold text-sm">Engagement</h2>
@@ -2391,7 +2881,7 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
       {ptab==="apps" && (
         <div className="card p-5">
           <h2 className="font-bold text-sm mb-3">Course applications</h2>
-          {(isAdmin||isCounsel) && (
+          {(isAdmin||isCounsel||isManager) && (
             <div className="grid sm:grid-cols-5 gap-2 mb-4">
               <input value={appForm.course} onChange={e=>setAppForm({...appForm,course:e.target.value})} placeholder="Course name" style={{...inp,marginTop:0}} className="sm:col-span-2"/>
               <input value={appForm.institution} onChange={e=>setAppForm({...appForm,institution:e.target.value})} placeholder="University" style={{...inp,marginTop:0}}/>
@@ -2405,7 +2895,7 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
               <div key={a.id} className="flex flex-wrap items-center gap-3 p-3 rounded-xl border" style={{borderColor:T.line}}>
                 <div className="flex-1 min-w-[180px]"><div className="font-semibold text-sm">{a.course}</div><div className="text-[11px] text-slate-500">{a.institution||"—"}{a.commence_date?` · starts ${a.commence_date}`:""}</div></div>
                 <select value={a.status} onChange={e=>onUpdateApp(s.id,a.id,{...a,status:e.target.value})} className="text-xs font-semibold py-1.5 px-2 rounded-lg border bg-white" style={{borderColor:"#CBD5E1"}}>{APP_STATUSES.map(x=><option key={x}>{x}</option>)}</select>
-                {isAdmin && <button onClick={()=>onDeleteApp(s.id,a.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-slate-300 hover:text-red-500"><Trash2 size={14}/></button>}
+                {(isAdmin||isManager) && <button onClick={()=>onDeleteApp(s.id,a.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-slate-300 hover:text-red-500"><Trash2 size={14}/></button>}
               </div>
             ))}
           </div>
@@ -2414,7 +2904,7 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
 
       {/* DOCS TAB */}
       {ptab==="docs" && (
-        <DocsTab s={s} docs={docs} isAdmin={isAdmin} isCounsel={isCounsel}
+        <DocsTab s={s} docs={docs} isAdmin={isAdmin} isCounsel={isCounsel} isManager={isManager}
           onCycleDoc={onCycleDoc} onAddDoc={onAddDoc} onDeleteDoc={onDeleteDoc} onUpdate={onUpdate}
           newDoc={newDoc} setNewDoc={setNewDoc}/>
       )}
@@ -2443,7 +2933,7 @@ function StudentDetail({ s, team, counsellors, bdeList, memberName, role, isAdmi
 }
 
 /* ════ DOCS TAB COMPONENT ════ */
-function DocsTab({ s, docs, isAdmin, isCounsel, onCycleDoc, onAddDoc, onDeleteDoc, onUpdate, newDoc, setNewDoc }) {
+function DocsTab({ s, docs, isAdmin, isCounsel, isManager, onCycleDoc, onAddDoc, onDeleteDoc, onUpdate, newDoc, setNewDoc }) {
   const [expandedDoc, setExpandedDoc] = useState(null); // doc id
   const [docDetails, setDocDetails]   = useState({}); // { docId: { field: value } }
 
@@ -2508,7 +2998,7 @@ function DocsTab({ s, docs, isAdmin, isCounsel, onCycleDoc, onAddDoc, onDeleteDo
                   onClick={()=>{ if(d.id&&!d.id.startsWith("tmp-")) onCycleDoc(s.id,d.id,d.status,d.name); else onAddDoc(s.id,d.name); }}
                   className="text-[10px] font-bold px-3 py-1.5 rounded-lg text-white shrink-0"
                   style={{background:DOC_COLORS[d.status]}}>{d.status}</button>
-                {(isAdmin||isCounsel)&&d.id&&!d.id.startsWith("tmp-")&&(
+                {(isAdmin||isCounsel||isManager)&&d.id&&!d.id.startsWith("tmp-")&&(
                   <button onClick={()=>onDeleteDoc(s.id,d.id)} className="p-1 rounded-lg hover:bg-red-50 text-slate-300 hover:text-red-500 shrink-0"><X size={11}/></button>
                 )}
               </div>
@@ -2577,8 +3067,110 @@ function DocsTab({ s, docs, isAdmin, isCounsel, onCycleDoc, onAddDoc, onDeleteDo
   );
 }
 
+/* ════ SLOT PICKER MODAL (inline counsellor assignment) ════ */
+function SlotPickerModal({ counsellorId, studentId, date, onDateChange, slots, counsellors, students, onBook, onAddSlot, onClose, notify }) {
+  const [booking, setBooking] = useState(false);
+  const c = counsellors.find(x => x.id === counsellorId);
+  const student = students.find(s => s.id === studentId);
+  const slotsForDay = slots.filter(s => s.counsellor_id === counsellorId && s.slot_date === date);
+
+  const handleSlot = async (time) => {
+    if (booking) return;
+    setBooking(true);
+    try {
+      const existing = slotsForDay.find(s => s.slot_time === time && s.status !== "booked");
+      let slotId;
+      if (existing) {
+        slotId = existing.id;
+      } else {
+        const ns = await onAddSlot({ counsellor_id: counsellorId, slot_date: date, slot_time: time, status: "available" }, true);
+        slotId = ns?.id;
+      }
+      if (slotId) await onBook(slotId, studentId);
+    } catch(e) {
+      console.error("SlotPickerModal booking error:", e);
+    } finally {
+      setBooking(false);
+    }
+  };
+
+  return (
+    <AppModal title="Book counselling slot" onClose={onClose}>
+      <div className="space-y-3">
+        {/* Counsellor card */}
+        <div className="p-3 rounded-xl flex items-center gap-3" style={{background:T.blue+"0D",border:`1px solid ${T.blue}33`}}>
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-white text-xs shrink-0" style={{background:T.blue}}>
+            {(c?.name||"?")[0]}
+          </div>
+          <div>
+            <div className="font-bold text-sm">{c?.name || "Counsellor"}</div>
+            <div className="text-[11px] text-slate-400">Counsellor</div>
+          </div>
+        </div>
+
+        {/* Student card */}
+        {student && (
+          <div className="p-3 rounded-xl flex items-center gap-3" style={{background:T.teal+"0D",border:`1px solid ${T.teal}33`}}>
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-white text-xs shrink-0" style={{background:T.teal}}>
+              {(student.name||"?")[0]}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="font-bold text-sm truncate">{student.name}</div>
+              <div className="text-[11px] text-slate-400">{student.phone}</div>
+            </div>
+          </div>
+        )}
+
+        {/* Date picker */}
+        <label className="block text-xs font-semibold text-slate-500">
+          Select date *
+          <input
+            type="date"
+            value={date}
+            onChange={e => onDateChange(e.target.value)}
+            min={todayStr()}
+            style={{...inp, marginTop:4}}
+          />
+        </label>
+
+        {/* Slot grid */}
+        <div>
+          <div className="text-xs font-semibold text-slate-500 mb-2">Pick a time slot</div>
+          <div className="grid grid-cols-2 gap-2">
+            {SLOT_TIMES.map(time => {
+              const slot = slotsForDay.find(s => s.slot_time === time);
+              const isBooked = slot?.status === "booked";
+              return (
+                <button
+                  key={time}
+                  onClick={() => !isBooked && handleSlot(time)}
+                  disabled={isBooked || booking}
+                  className="py-2.5 px-3 rounded-xl text-xs font-bold border-2 transition disabled:opacity-50"
+                  style={{
+                    borderColor: isBooked ? "#CBD5E1" : T.teal,
+                    background: isBooked ? "#F1F5F9" : T.teal+"15",
+                    color: isBooked ? "#94A3B8" : T.teal,
+                    cursor: isBooked ? "not-allowed" : "pointer"
+                  }}
+                >
+                  {SLOT_LABELS[time] || time}
+                  {isBooked && <span className="block text-[10px] font-normal mt-0.5">Booked</span>}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {booking && (
+          <div className="text-center text-xs font-semibold text-slate-400 py-2">Booking…</div>
+        )}
+      </div>
+    </AppModal>
+  );
+}
+
 /* ════ ADD STUDENT MODAL ════ */
-function AddStudentModal({ team, isBDE, currentUser, onClose, onSave }) {
+function AddStudentModal({ team, isBDE, isManager, currentUser, onClose, onSave }) {
   const counsellors = team.filter(t => (t.roles||[t.role]).includes("Counsellor") || t.role==="Counsellor");
   const [f,setF]=useState({
     name:"", phone:"", email:"", level:"PG", country:"UK", intake:"September",
@@ -2589,7 +3181,7 @@ function AddStudentModal({ team, isBDE, currentUser, onClose, onSave }) {
   });
   const set=k=>e=>setF(p=>({...p,[k]:e.target.value}));
   return (
-    <AppModal title={isBDE?"Add new lead":"New lead"} onClose={onClose}>
+    <AppModal title={isBDE?"Add new lead":isManager?"Add new lead (Manager)":"New lead"} onClose={onClose}>
       {isBDE && (
         <div className="mb-3 p-3 rounded-xl text-xs font-semibold flex items-start gap-2" style={{background:"#CCFBF1",color:"#134E4A"}}>
           <span>✓ Lead added under your name. Choose a counsellor below to assign directly — or leave blank and admin will assign later.</span>
@@ -2782,7 +3374,7 @@ function DistributeModal({ leads, bdeList, onClose, onDistribute }) {
                 <div className="flex items-center gap-3">
                   <button onClick={()=>toggleBDE(b.id)}
                     className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-white text-sm shrink-0"
-                    style={{background:isOn?T.teal:"#CBD5E1"}}>{b.name[0]}</button>
+                    style={{background:isOn?T.teal:"#CBD5E1"}}>{(b.name||"?")[0]}</button>
                   <div className="flex-1">
                     <div className="font-bold text-sm">{b.name}</div>
                     {mode==="equal" ? (
@@ -2928,18 +3520,144 @@ function SessionCard({ header, outcome, notesTxt, fullText, date, noteId, studen
 }
 
 function Splash({ text }) {
+  const [tick, setTick] = React.useState(0);
+  const [dotCount, setDotCount] = React.useState(0);
+  React.useEffect(() => {
+    const id = setInterval(() => { setTick(t => t + 1); setDotCount(d => (d + 1) % 4); }, 500);
+    return () => clearInterval(id);
+  }, []);
+
+  const facts = [
+    "🌍 8 countries, endless possibilities",
+    "🎓 Helping students reach top universities",
+    "📋 13-stage pipeline to track every journey",
+    "⚡ Real-time updates across your team",
+    "🚀 From lead to departure — all in one place",
+    "🤝 Built for counsellors who care",
+  ];
+  const fact = facts[tick % facts.length];
+
   return (
-    <div className="min-h-screen flex items-center justify-center" style={{background:"linear-gradient(160deg,#0A1F3D,#13315C)"}}>
-      <div className="text-center">
-        <div className="w-20 h-20 mx-auto rounded-2xl flex items-center justify-center font-extrabold text-white text-2xl mb-5" style={{background:"linear-gradient(135deg,#0d6efd,#F59E0B)"}}>AV</div>
-        <h1 className="text-2xl font-extrabold text-white mb-1">Welcome to Abroadveda</h1>
-        <p className="text-white/50 text-sm mb-5">CRM Workspace</p>
-        <div className="flex items-center gap-2 text-white/50 justify-center text-xs"><Loader2 className="animate-spin" size={14}/>{text}</div>
+    <div style={{
+      minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center',
+      background:'linear-gradient(160deg,#060F22 0%,#0A1F3D 45%,#0d2a52 100%)',
+      overflow:'hidden', position:'relative', fontFamily:"'Plus Jakarta Sans',system-ui,sans-serif",
+    }}>
+      <style>{`
+        @keyframes sp-orb1 { 0%,100%{transform:translate(0,0) scale(1)} 33%{transform:translate(40px,-30px) scale(1.1)} 66%{transform:translate(-20px,20px) scale(0.9)} }
+        @keyframes sp-orb2 { 0%,100%{transform:translate(0,0) scale(1)} 33%{transform:translate(-50px,20px) scale(0.95)} 66%{transform:translate(30px,-40px) scale(1.08)} }
+        @keyframes sp-orb3 { 0%,100%{transform:translate(0,0) scale(1)} 50%{transform:translate(20px,40px) scale(1.12)} }
+        @keyframes sp-rise  { from{opacity:0;transform:translateY(20px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes sp-logo  { 0%{transform:scale(0.7) rotate(-8deg);opacity:0} 60%{transform:scale(1.08) rotate(2deg);opacity:1} 100%{transform:scale(1) rotate(0deg);opacity:1} }
+        @keyframes sp-pulse { 0%,100%{box-shadow:0 0 0 0 rgba(13,110,253,.6)} 50%{box-shadow:0 0 0 18px rgba(13,110,253,0)} }
+        @keyframes sp-bar   { 0%{width:0%} 100%{width:88%} }
+        @keyframes sp-float { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
+        @keyframes sp-star  { 0%,100%{opacity:0;transform:scale(0)} 50%{opacity:1;transform:scale(1)} }
+        @keyframes sp-fact  { 0%{opacity:0;transform:translateY(8px)} 15%,85%{opacity:1;transform:translateY(0)} 100%{opacity:0;transform:translateY(-8px)} }
+        @keyframes sp-ring  { 0%{transform:scale(0.85);opacity:.6} 100%{transform:scale(1.5);opacity:0} }
+        .sp-logo  { animation: sp-logo  .7s cubic-bezier(.34,1.56,.64,1) both; }
+        .sp-rise  { animation: sp-rise  .6s ease both; }
+        .sp-float { animation: sp-float 3s ease-in-out infinite; }
+        .sp-pulse { animation: sp-pulse 2s ease-in-out infinite; }
+        .sp-fact  { animation: sp-fact  3s ease both; }
+        .sp-ring  { animation: sp-ring  1.8s ease-out infinite; }
+      `}</style>
+
+      {/* Animated background orbs */}
+      <div style={{position:'absolute',top:'15%',left:'12%',width:320,height:320,borderRadius:'50%',
+        background:'radial-gradient(circle,rgba(13,110,253,0.18),transparent 70%)',
+        animation:'sp-orb1 9s ease-in-out infinite',filter:'blur(2px)'}}/>
+      <div style={{position:'absolute',bottom:'10%',right:'8%',width:280,height:280,borderRadius:'50%',
+        background:'radial-gradient(circle,rgba(245,158,11,0.14),transparent 70%)',
+        animation:'sp-orb2 11s ease-in-out infinite',filter:'blur(2px)'}}/>
+      <div style={{position:'absolute',top:'55%',left:'60%',width:180,height:180,borderRadius:'50%',
+        background:'radial-gradient(circle,rgba(99,102,241,0.15),transparent 70%)',
+        animation:'sp-orb3 7s ease-in-out infinite',filter:'blur(1px)'}}/>
+
+      {/* Dot grid */}
+      <div style={{position:'absolute',inset:0,
+        backgroundImage:'radial-gradient(circle,rgba(255,255,255,0.25) 1px,transparent 1px)',
+        backgroundSize:'40px 40px',opacity:.12,pointerEvents:'none'}}/>
+
+      {/* Floating stars */}
+      {[[15,20,1.2],[80,35,2],[25,70,1.8],[70,60,1],[45,15,2.4],[88,80,1.6],[10,50,2.2]].map(([x,y,d],i)=>(
+        <div key={i} style={{position:'absolute',left:`${x}%`,top:`${y}%`,
+          width:4,height:4,borderRadius:'50%',background:'#fff',
+          animation:`sp-star ${d+1.5}s ease-in-out ${i*0.4}s infinite`}}/>
+      ))}
+
+      {/* Content */}
+      <div style={{textAlign:'center',position:'relative',zIndex:10,padding:'0 24px',maxWidth:420}}>
+
+        {/* Logo with pulse rings */}
+        <div className="sp-float" style={{position:'relative',display:'inline-block',marginBottom:32}}>
+          {/* Pulse rings */}
+          <div className="sp-ring" style={{position:'absolute',inset:-12,borderRadius:28,
+            border:'2px solid rgba(13,110,253,0.5)'}}/>
+          <div className="sp-ring" style={{position:'absolute',inset:-12,borderRadius:28,
+            border:'2px solid rgba(13,110,253,0.35)',animationDelay:'0.6s'}}/>
+          {/* Logo badge */}
+          <div className="sp-logo sp-pulse" style={{
+            width:88,height:88,borderRadius:24,
+            display:'flex',alignItems:'center',justifyContent:'center',
+            fontWeight:900,color:'#fff',fontSize:28,letterSpacing:'-1px',
+            background:'linear-gradient(135deg,#0d6efd 0%,#F59E0B 100%)',
+            boxShadow:'0 8px 32px rgba(13,110,253,0.5)',
+          }}>AV</div>
+        </div>
+
+        {/* Title */}
+        <div className="sp-rise" style={{animationDelay:'0.15s'}}>
+          <h1 style={{fontSize:30,fontWeight:900,color:'#fff',margin:'0 0 6px',letterSpacing:'-0.5px',
+            textShadow:'0 2px 16px rgba(13,110,253,.4)'}}>
+            Abroad Veda
+          </h1>
+          <p style={{color:'rgba(147,197,253,0.8)',fontSize:13,fontWeight:600,
+            letterSpacing:'0.2em',textTransform:'uppercase',margin:'0 0 32px'}}>
+            CRM Workspace
+          </p>
+        </div>
+
+        {/* Rotating fact */}
+        <div className="sp-rise" style={{animationDelay:'0.3s',marginBottom:32}}>
+          <div key={tick} className="sp-fact" style={{
+            fontSize:13,color:'rgba(255,255,255,0.65)',fontWeight:600,
+            minHeight:22,letterSpacing:'0.01em',
+          }}>{fact}</div>
+        </div>
+
+        {/* Progress bar */}
+        <div className="sp-rise" style={{animationDelay:'0.4s'}}>
+          <div style={{height:3,borderRadius:4,background:'rgba(255,255,255,0.08)',overflow:'hidden',marginBottom:12}}>
+            <div style={{
+              height:'100%',borderRadius:4,
+              background:'linear-gradient(90deg,#0d6efd,#60A5FA,#F59E0B)',
+              animation:'sp-bar 3.5s cubic-bezier(.4,0,.2,1) forwards',
+              boxShadow:'0 0 12px rgba(13,110,253,.7)',
+            }}/>
+          </div>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:8,
+            color:'rgba(255,255,255,0.35)',fontSize:12,fontWeight:500}}>
+            <Loader2 size={12} style={{animation:'spin 1s linear infinite',color:'#60A5FA'}}/>
+            {text}{''.padEnd(dotCount,'.')}
+          </div>
+        </div>
+
+        {/* Bottom decorative pills */}
+        <div className="sp-rise" style={{animationDelay:'0.55s',display:'flex',justifyContent:'center',gap:8,marginTop:28,flexWrap:'wrap'}}>
+          {['🎓 Counselling','🌍 Visa','📋 Pipeline'].map(label => (
+            <div key={label} style={{
+              padding:'5px 12px',borderRadius:20,
+              background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.1)',
+              color:'rgba(255,255,255,0.4)',fontSize:11,fontWeight:600,
+            }}>{label}</div>
+          ))}
+        </div>
       </div>
     </div>
   );
 }
-function ModalBtn({ icon, title, sub, onClick }) {
+function AppModalBtn({ icon, title, sub, onClick }) {
   return (
     <button onClick={onClick} className="w-full flex items-center gap-3 p-3 rounded-xl border hover:bg-slate-50 text-left" style={{borderColor:T.line}}>
       {icon}<span><span className="font-semibold text-sm block">{title}</span><span className="text-xs text-slate-500">{sub}</span></span>
@@ -2951,7 +3669,7 @@ function AppModal({ title, children, onClose }) {
   useEffect(()=>{ const h=e=>{if(e.key==="Escape")onClose();}; window.addEventListener("keydown",h); return()=>window.removeEventListener("keydown",h); },[onClose]);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{background:"rgba(10,31,61,.55)"}} onClick={onClose}>
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-5 max-h-[90vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
+      <div role="dialog" aria-modal="true" aria-label={title} className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-5 max-h-[90vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4"><h2 className="font-extrabold">{title}</h2><button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100"><X size={16}/></button></div>
         {children}
       </div>

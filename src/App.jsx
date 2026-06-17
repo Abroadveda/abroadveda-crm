@@ -314,10 +314,13 @@ export default function App() {
 
   const stats = useMemo(() => ({
     total:     visibleStudents.length,
-    active:    visibleStudents.filter(s => !["lead","departed"].includes(s.stage)).length,
-    offers:    visibleStudents.filter(s => stageIdx(s.stage)>=stageIdx("offer")&&s.stage!=="departed").length,
+    // "In Pipeline" = actively processing (excludes leads, terminal/inactive stages)
+    active:    visibleStudents.filter(s => ["processing","counsel","shortlist","applied","offer","finance","visa","predep"].includes(s.stage)).length,
+    // "Offers+" = students who have received an offer and are at or beyond offer stage (incl. departed)
+    offers:    visibleStudents.filter(s => ["offer","finance","visa","predep","departed"].includes(s.stage)).length,
     departed:  visibleStudents.filter(s => s.stage==="departed").length,
-    followUps: visibleStudents.filter(s => s.follow_up && new Date(s.follow_up)<=new Date(Date.now()+2*86400000)).length,
+    // All students with any follow-up scheduled (not just next 2 days)
+    followUps: visibleStudents.filter(s => s.follow_up).length,
     pending:   pendingAssignment.length,
   }), [visibleStudents, pendingAssignment]);
 
@@ -775,8 +778,15 @@ export default function App() {
               )}
 
               {/* Stats */}
-              <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-                {[["Total",stats.total,T.blue],["Active",stats.active,"#6366F1"],["Offers",stats.offers,T.saffron],["Departed",stats.departed,T.ok],["Follow-ups",stats.followUps,T.danger]].map(([l,v,c])=>(
+              <div className={`grid gap-3 ${(isAdmin||isManager)&&stats.pending>0 ? "grid-cols-2 lg:grid-cols-6" : "grid-cols-2 lg:grid-cols-5"}`}>
+                {[
+                  ["Total",        stats.total,     T.blue],
+                  ["In Pipeline",  stats.active,    "#6366F1"],
+                  ["Offers+",      stats.offers,    T.saffron],
+                  ["Departed",     stats.departed,  T.ok],
+                  ["Follow-ups",   stats.followUps, T.danger],
+                  ...((isAdmin||isManager)&&stats.pending>0 ? [["Unassigned", stats.pending, "#EF4444"]] : []),
+                ].map(([l,v,c])=>(
                   <button key={l} onClick={()=>setTab("students")} className="card lift p-4 text-left">
                     <div className="text-3xl font-extrabold num" style={{color:c}}>{v}</div>
                     <div className="text-xs font-semibold text-slate-500 mt-1">{l}</div>
@@ -834,7 +844,7 @@ export default function App() {
                 </div>
               </div>
 
-              <TodaySchedule slots={slots} students={students} team={team} isAdmin={isAdmin} isBDE={isBDE} isManager={isManager} onTabChange={setTab}/>
+              <TodaySchedule slots={slots} students={students} team={team} isAdmin={isAdmin} isBDE={isBDE} isManager={isManager} isCounsel={isCounsel} currentUserId={currentUser?.id} onTabChange={setTab}/>
             </div>
           )}
 
@@ -1864,12 +1874,14 @@ function LoginScreen({ team, security, onLogin }) {
 
 /* ════ SLOTS VIEW ════ */
 /* ════ TODAY SCHEDULE WIDGET ════ */
-function TodaySchedule({ slots, students, team, isAdmin, isBDE, isManager, onTabChange }) {
-  if (!isAdmin && !isBDE && !isManager) return null;
+function TodaySchedule({ slots, students, team, isAdmin, isBDE, isManager, isCounsel, currentUserId, onTabChange }) {
+  if (!isAdmin && !isBDE && !isManager && !isCounsel) return null;
   const today = new Date().toISOString().slice(0,10);
-  const todaySlots = slots.filter(s=>s.slot_date===today);
+  // Counsellors see only their own slots; admin/manager/BDE see all
+  const mySlots = isCounsel && !isAdmin && !isManager ? slots.filter(s=>s.counsellor_id===currentUserId) : slots;
+  const todaySlots = mySlots.filter(s=>s.slot_date===today);
   // Also show upcoming booked slots (next 7 days)
-  const upcomingBooked = slots.filter(s=>s.status==="booked"&&s.slot_date>=today).sort((a,b)=>a.slot_date.localeCompare(b.slot_date)||a.slot_time.localeCompare(b.slot_time));
+  const upcomingBooked = mySlots.filter(s=>s.status==="booked"&&s.slot_date>=today).sort((a,b)=>a.slot_date.localeCompare(b.slot_date)||a.slot_time.localeCompare(b.slot_time));
   const studentName = id => students.find(s=>s.id===id)?.name||"";
   const counsellorName = id => team.find(t=>t.id===id)?.name||"";
   return (

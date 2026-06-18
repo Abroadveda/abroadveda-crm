@@ -6,7 +6,8 @@ import {
   Download, Settings as Cog, Send, FileSpreadsheet, Upload, Lock,
   MessageCircle, PhoneCall, Flame, ArrowRight, Wifi, WifiOff, RefreshCw,
   LogOut, Eye, EyeOff, Video, AlertCircle, Calendar, Clock, ChevronDown,
-  CheckSquare, Square, Edit2, Save, KeyRound, Database, ShieldCheck, Moon, Sun
+  CheckSquare, Square, Edit2, Save, KeyRound, Database, ShieldCheck, Moon, Sun,
+  Filter, MapPin
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import {
@@ -16,7 +17,8 @@ import {
   getTeam, createTeamMember, updateTeamMember, deleteTeamMember,
   getSlots, createSlot, bookSlot, freeSlot, deleteSlot,
   bulkInsertStudents, getSetting, setSetting, checkDbHealth,
-  deleteNote as dbDeleteNote, updateNote as dbUpdateNote
+  deleteNote as dbDeleteNote, updateNote as dbUpdateNote,
+  loadStudentDetail
 } from "./lib/db";
 import { hashPassword, validatePassword } from "./lib/crypto";
 import { telNum, waNum, initials, formatDate, formatTime, formatPhoneDisplay } from "./lib/format";
@@ -172,6 +174,7 @@ export default function App() {
   const [security,setSecurity]   = useState({ adminPass:"", exportPass:"" });
   const [toast,setToast]         = useState("");
   const [dbHealth,setDbHealth]   = useState(null);
+  const [showMobileFilters,setShowMobileFilters] = useState(false);
 
   const notify = (msg) => { setToast(msg); setTimeout(()=>setToast(""),3500); };
 
@@ -203,6 +206,21 @@ export default function App() {
   }, []);
 
   useEffect(() => { loadAll(); }, [loadAll]);
+
+  // Lazy-load applications + documents only when a student detail is opened
+  useEffect(() => {
+    if (!selected) return;
+    const s = students.find(x => x.id === selected);
+    if (!s || s._detailLoaded) return;
+    loadStudentDetail(selected)
+      .then(detail => {
+        setStudents(p => p.map(x => x.id === selected
+          ? { ...x, applications: detail.applications || [], documents: detail.documents || [], _detailLoaded: true }
+          : x
+        ));
+      })
+      .catch(() => {});
+  }, [selected]);
 
   const role      = activeRole || (currentUser?.isAdmin ? "Admin" : primaryRole(currentUser||{}));
   const isAdmin   = role === "Admin";
@@ -654,7 +672,6 @@ export default function App() {
   return (
     <div className="min-h-screen" style={{background:T.mist,fontFamily:"'Plus Jakarta Sans',system-ui,sans-serif",color:T.ink}}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
         ::-webkit-scrollbar{height:6px;width:6px} ::-webkit-scrollbar-thumb{background:#CBD5E1;border-radius:6px}
         input:focus,select:focus,textarea:focus{outline:2px solid #0d6efd33;border-color:#0d6efd !important}
         .num{font-variant-numeric:tabular-nums}
@@ -683,7 +700,6 @@ export default function App() {
               : <div className="text-[10px]" style={{color:rMeta(role)?.color}}>{role}</div>
             }
           </div>
-          <button onClick={()=>{setCurrentUser(null);setActiveRole(null);try{localStorage.removeItem("crm_user");localStorage.removeItem("crm_role");}catch{}}} className="p-1 rounded-lg hover:bg-white/10 text-blue-200/60 hover:text-white" title="Logout"><LogOut size={13}/></button>
         </div>
         <nav className="mt-5 space-y-1">
           {NAV.map(([id,Icon,label])=>(
@@ -717,6 +733,11 @@ export default function App() {
           )}
           {isAdmin && <button onClick={()=>setShowSettings(true)} className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-semibold text-blue-100/80 hover:bg-white/10"><Cog size={15}/> Settings</button>}
           <div className="px-3 pt-1 text-[10px] text-blue-200/50 flex items-center gap-1.5">{syncing?<><Loader2 size={9} className="animate-spin"/> Syncing…</>:<><Wifi size={9}/> Live</>}</div>
+          <button
+            onClick={()=>{setCurrentUser(null);setActiveRole(null);try{localStorage.removeItem("crm_user");localStorage.removeItem("crm_role");}catch{}}}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-red-300/80 hover:bg-red-500/15 hover:text-red-300 transition mt-1">
+            <LogOut size={15}/> Log out
+          </button>
         </div>
       </aside>
 
@@ -742,9 +763,10 @@ export default function App() {
           </div>
           <span className="hidden md:flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg" style={{background:rMeta(role)?.badge,color:rMeta(role)?.tx}}>{role}</span>
           {(isAdmin||isBDE||isManager) && <button onClick={()=>setShowAdd(true)} className="md:hidden p-2.5 rounded-xl text-white" style={{background:T.blue}}><UserPlus size={16}/></button>}
+          <button onClick={()=>{setCurrentUser(null);setActiveRole(null);try{localStorage.removeItem("crm_user");localStorage.removeItem("crm_role");}catch{}}} className="md:hidden p-2.5 rounded-xl border text-slate-500 hover:text-red-500 hover:border-red-200 hover:bg-red-50 transition" title="Log out" style={{borderColor:T.line}}><LogOut size={16}/></button>
         </header>
 
-        <main className="flex-1 p-4 sm:p-6 max-w-6xl mx-auto w-full pb-24 md:pb-8">
+        <main className="flex-1 p-4 sm:p-6 max-w-6xl mx-auto w-full md:pb-8" style={{paddingBottom:"calc(5.5rem + env(safe-area-inset-bottom))"}} id="main-content">
 
           {/* DASHBOARD */}
           {tab==="dashboard" && (
@@ -816,13 +838,13 @@ export default function App() {
                 <div className="card p-5">
                   <h2 className="font-bold text-sm mb-3 flex items-center gap-2"><CalendarClock size={15} style={{color:T.danger}}/> Follow-ups</h2>
                   {visibleStudents.filter(s=>s.follow_up).sort((a,b)=>a.follow_up.localeCompare(b.follow_up)).slice(0,5).map(s=>(
-                    <div key={s.id} className="flex items-center gap-2 py-2 border-b last:border-0" style={{borderColor:T.line}}>
+                    <div key={s.id} className="flex items-center gap-2 py-2.5 border-b last:border-0" style={{borderColor:T.line}}>
                       <button onClick={()=>openStudent(s.id)} className="flex-1 min-w-0 text-left">
                         <span className="block text-sm font-semibold truncate">{s.name}</span>
                         <span className={`text-[11px] font-bold ${isOverdue(s)?"text-red-600":"text-slate-400"}`}>{isOverdue(s)?"Overdue — ":""}{s.follow_up}</span>
                       </button>
-                      <a href={`tel:${telNum(s.phone)}`} className="p-2.5 rounded-xl text-white font-bold" style={{background:T.blue}}><PhoneCall size={15}/></a>
-                      <a href={waNum(s.phone)} target="_blank" rel="noreferrer" className="p-2.5 rounded-xl text-white font-bold" style={{background:"#25D366"}}><MessageCircle size={15}/></a>
+                      <a href={`tel:${telNum(s.phone)}`} className="p-3 rounded-xl text-white font-bold" style={{background:T.blue}}><PhoneCall size={16}/></a>
+                      <a href={waNum(s.phone)} target="_blank" rel="noreferrer" className="p-3 rounded-xl text-white font-bold" style={{background:"#25D366"}}><MessageCircle size={16}/></a>
                     </div>
                   ))}
                   {!visibleStudents.some(s=>s.follow_up) && <p className="text-sm text-slate-400">No follow-ups scheduled.</p>}
@@ -831,13 +853,13 @@ export default function App() {
                 <div className="card p-5">
                   <h2 className="font-bold text-sm mb-3 flex items-center gap-2"><Flame size={15} style={{color:T.danger}}/> Hot leads</h2>
                   {visibleStudents.filter(s=>s.qualification==="Hot"&&s.stage!=="departed").slice(0,5).map(s=>(
-                    <div key={s.id} className="flex items-center gap-2 py-2 border-b last:border-0" style={{borderColor:T.line}}>
+                    <div key={s.id} className="flex items-center gap-2 py-2.5 border-b last:border-0" style={{borderColor:T.line}}>
                       <button onClick={()=>openStudent(s.id)} className="flex-1 min-w-0 text-left">
                         <span className="block text-sm font-semibold truncate hover:underline">{s.name}</span>
                         <span className="block text-[11px] text-slate-400">{stageOf(s.stage).label} · {s.country}</span>
                       </button>
-                      <a href={`tel:${telNum(s.phone)}`} className="p-2.5 rounded-xl text-white font-bold" style={{background:T.blue}}><PhoneCall size={15}/></a>
-                      <a href={waNum(s.phone)} target="_blank" rel="noreferrer" className="p-2.5 rounded-xl text-white font-bold" style={{background:"#25D366"}}><MessageCircle size={15}/></a>
+                      <a href={`tel:${telNum(s.phone)}`} className="p-3 rounded-xl text-white font-bold" style={{background:T.blue}}><PhoneCall size={16}/></a>
+                      <a href={waNum(s.phone)} target="_blank" rel="noreferrer" className="p-3 rounded-xl text-white font-bold" style={{background:"#25D366"}}><MessageCircle size={16}/></a>
                     </div>
                   ))}
                   {!visibleStudents.some(s=>s.qualification==="Hot"&&s.stage!=="departed") && <p className="text-sm text-slate-400">No hot leads.</p>}
@@ -864,6 +886,32 @@ export default function App() {
                         <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{background:st.color}}/>
                         <span className="text-xs font-bold truncate flex-1">{st.label}</span>
                         <span className="text-[10px] font-bold text-slate-500 bg-white rounded-full px-2 py-0.5 num shrink-0">{col.length}</span>
+                        {col.length>0 && !inSel && isAdmin && (
+                          <button
+                            title={`Export ${st.label} contacts`}
+                            onClick={()=>{
+                              const rows = col.map(s=>({
+                                Name: s.name,
+                                Phone: s.phone||"",
+                                Email: s.email||"",
+                                Country: s.country||"",
+                                Level: s.level||"",
+                                Intake: s.intake||"",
+                                BDE: memberName(s.bde_id),
+                                Counsellor: memberName(s.assigned_to),
+                                "Follow Up": s.follow_up||"",
+                                "Added On": new Date(s.created_at||Date.now()).toLocaleDateString("en-GB"),
+                              }));
+                              const ws = XLSX.utils.json_to_sheet(rows);
+                              const wb = XLSX.utils.book_new();
+                              XLSX.utils.book_append_sheet(wb, ws, st.label.slice(0,31));
+                              XLSX.writeFile(wb, `abroadveda-${st.id}.xlsx`);
+                              notify(`Exported ${col.length} contacts from ${st.label}`);
+                            }}
+                            className="p-1 rounded hover:bg-white/60 text-slate-400 hover:text-green-600 shrink-0">
+                            <Download size={12}/>
+                          </button>
+                        )}
                         {col.length>0 && !inSel && (isAdmin || isManager || (isBDE && ["lead","notinterested","enrolled"].includes(st.id))) && (
                           <button onClick={()=>{setPipeSelStage(st.id);setPipeSelected(new Set());}} title="Select to delete" className="p-1 rounded hover:bg-white/60 text-slate-400 hover:text-red-500 shrink-0"><Trash2 size={12}/></button>
                         )}
@@ -962,46 +1010,65 @@ export default function App() {
               </div>
 
               {/* Filters */}
-              <div className="flex flex-wrap gap-2">
-                <div className="relative flex-1 min-w-[160px] max-w-xs">
-                  <Search size={13} className="absolute left-3 top-2.5 text-slate-400"/>
-                  <input
-                    value={query}
-                    onChange={e => {
-                      setQuery(e.target.value);
-                      if (e.target.value.trim()) setFilterStage("all");
-                      // Immediately scroll to top of table
-                      document.getElementById("students-table")?.scrollIntoView({ behavior:"smooth", block:"start" });
-                    }}
-                    placeholder="Name or phone number…"
-                    className="w-full pl-8 pr-3 py-2 rounded-xl border text-sm bg-white"
-                    style={{borderColor:T.line}}
-                  />
-                  {query && (
-                    <button onClick={()=>setQuery("")} className="absolute right-2.5 top-2 text-slate-400 hover:text-slate-600">
-                      <X size={14}/>
-                    </button>
-                  )}
-                </div>
-                <select value={filterQual} onChange={e=>setFilterQual(e.target.value)} className="py-2 px-2 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:T.line}}><option value="all">All quals</option>{QUALS.map(q=><option key={q.id} value={q.id}>{q.id}</option>)}</select>
-                <select value={filterStage} onChange={e=>setFilterStage(e.target.value)} className="py-2 px-2 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:T.line}}><option value="all">All stages</option>{STAGES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select>
-                <select value={filterCountry} onChange={e=>setFilterCountry(e.target.value)} className="py-2 px-2 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:T.line}}><option value="all">All countries</option>{COUNTRIES.map(c=><option key={c}>{c}</option>)}</select>
-                <select value={filterCall} onChange={e=>setFilterCall(e.target.value)} className="py-2 px-2 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:filterCall!=="all"?"#F59E0B":T.line, color:filterCall!=="all"?"#92400E":"inherit"}}>
-                  <option value="all">All call status</option>
-                  <option value="never">📵 Never called</option>
-                  <option value="callback_today">📅 Callback today</option>
-                  <option value="overdue_callback">⚠️ Overdue callback</option>
-                  <option value="counselling_today">🎓 Counselling today</option>
-                  <option value="counselling_upcoming">📆 Counselling upcoming</option>
-                  <option value="not_reachable">🔴 Not reachable</option>
-                  <option value="busy">🟡 Busy — try again</option>
-                  <option value="callback">🔵 Callback later</option>
-                  <option value="interested">🟢 Interested</option>
-                  <option value="not_interested">⛔ Not interested</option>
-                  <option value="booked">✅ Counselling booked</option>
-                  <option value="whatsapp">💬 WhatsApp sent</option>
-                </select>
-              </div>
+              {(() => {
+                const activeFilterCount = [filterStage!=="all",filterCountry!=="all",filterQual!=="all",filterCall!=="all"].filter(Boolean).length;
+                const filterSelects = (
+                  <>
+                    <select value={filterQual} onChange={e=>setFilterQual(e.target.value)} className="py-2 px-2 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:T.line}}><option value="all">All quals</option>{QUALS.map(q=><option key={q.id} value={q.id}>{q.id}</option>)}</select>
+                    <select value={filterStage} onChange={e=>setFilterStage(e.target.value)} className="py-2 px-2 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:T.line}}><option value="all">All stages</option>{STAGES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select>
+                    <select value={filterCountry} onChange={e=>setFilterCountry(e.target.value)} className="py-2 px-2 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:T.line}}><option value="all">All countries</option>{COUNTRIES.map(c=><option key={c}>{c}</option>)}</select>
+                    <select value={filterCall} onChange={e=>setFilterCall(e.target.value)} className="py-2 px-2 rounded-xl border text-sm bg-white font-semibold" style={{borderColor:filterCall!=="all"?"#F59E0B":T.line,color:filterCall!=="all"?"#92400E":"inherit"}}>
+                      <option value="all">All call status</option>
+                      <option value="never">📵 Never called</option>
+                      <option value="callback_today">📅 Callback today</option>
+                      <option value="overdue_callback">⚠️ Overdue callback</option>
+                      <option value="counselling_today">🎓 Counselling today</option>
+                      <option value="counselling_upcoming">📆 Counselling upcoming</option>
+                      <option value="not_reachable">🔴 Not reachable</option>
+                      <option value="busy">🟡 Busy — try again</option>
+                      <option value="callback">🔵 Callback later</option>
+                      <option value="interested">🟢 Interested</option>
+                      <option value="not_interested">⛔ Not interested</option>
+                      <option value="booked">✅ Counselling booked</option>
+                      <option value="whatsapp">💬 WhatsApp sent</option>
+                    </select>
+                  </>
+                );
+                const searchBox = (
+                  <div className="relative flex-1 min-w-[160px]">
+                    <Search size={13} className="absolute left-3 top-2.5 text-slate-400"/>
+                    <input value={query} onChange={e=>{setQuery(e.target.value);if(e.target.value.trim())setFilterStage("all");}} placeholder="Name or phone…" className="w-full pl-8 pr-3 py-2 rounded-xl border text-sm bg-white" style={{borderColor:T.line}}/>
+                    {query && <button onClick={()=>setQuery("")} className="absolute right-2.5 top-2 text-slate-400"><X size={14}/></button>}
+                  </div>
+                );
+                return (
+                  <>
+                    {/* Desktop: all filters inline */}
+                    <div className="hidden sm:flex flex-wrap gap-2">
+                      {searchBox}
+                      {filterSelects}
+                    </div>
+                    {/* Mobile: search + filter toggle */}
+                    <div className="sm:hidden space-y-2">
+                      <div className="flex gap-2">
+                        {searchBox}
+                        <button onClick={()=>setShowMobileFilters(v=>!v)}
+                          className="flex items-center gap-1.5 px-3 py-2 rounded-xl border text-sm font-semibold shrink-0 transition"
+                          style={{borderColor:activeFilterCount>0?T.blue:T.line,background:activeFilterCount>0?"#EAF2FF":"#fff",color:activeFilterCount>0?T.blue:"#64748B"}}>
+                          <Filter size={14}/>
+                          {activeFilterCount>0 && <span className="w-4 h-4 rounded-full text-[10px] font-extrabold flex items-center justify-center text-white" style={{background:T.blue}}>{activeFilterCount}</span>}
+                        </button>
+                      </div>
+                      {showMobileFilters && (
+                        <div className="grid grid-cols-2 gap-2">
+                          {filterSelects}
+                          {activeFilterCount>0 && <button onClick={()=>{setFilterStage("all");setFilterCountry("all");setFilterQual("all");setFilterCall("all");setShowMobileFilters(false);}} className="col-span-2 py-2 rounded-xl border text-xs font-bold text-red-500 border-red-200 bg-red-50">Clear all filters</button>}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
 
               {/* Bulk action bar */}
               {(isAdmin||isManager) && selLeads.size>0 && (
@@ -1021,7 +1088,59 @@ export default function App() {
                 </div>
               )}
 
-              <div id="students-table" className="card overflow-x-auto">
+              {/* ── MOBILE card list ── */}
+              <div className="sm:hidden space-y-2">
+                {filtered.length===0 && (
+                  <div className="card p-8 text-center">
+                    <p className="text-sm text-slate-400">No students found.</p>
+                    {(query||filterStage!=="all"||filterCountry!=="all"||filterQual!=="all"||filterCall!=="all") && (
+                      <button onClick={()=>{setQuery("");setFilterStage("all");setFilterCountry("all");setFilterQual("all");setFilterCall("all");}} className="mt-2 text-xs font-semibold text-blue-600">Clear filters</button>
+                    )}
+                  </div>
+                )}
+                {filtered.map(s=>{
+                  const st=stageOf(s.stage);
+                  const notes=s.notes||[];
+                  const lastCall=[...notes].reverse().find(n=>n.text?.startsWith("📞"));
+                  const outcome=lastCall?lastCall.text.split("\n")[0].replace("📞 CALL — ",""):null;
+                  const callColor=!outcome?"#94A3B8":outcome.includes("Not reachable")?"#DC2626":outcome.includes("Busy")?"#F59E0B":outcome.includes("callback")?"#0d6efd":(outcome.includes("Interested")&&!outcome.includes("Not"))?"#16A34A":outcome.includes("Not interested")?"#64748B":outcome.includes("Counselling")?"#14B8A6":outcome.includes("WhatsApp")?"#25D366":"#94A3B8";
+                  const shortLabel=!outcome?"Never called":outcome.includes("Not reachable")?"Not reachable":outcome.includes("Busy")?"Busy":outcome.includes("callback")?"Callback":(outcome.includes("Interested")&&!outcome.includes("Not"))?"Interested":outcome.includes("Not interested")?"Not interested":outcome.includes("Counselling")?"Booked ✓":outcome.includes("WhatsApp")?"WhatsApp":outcome?.slice(0,14)||"Called";
+                  const chk=selLeads.has(s.id);
+                  return (
+                    <div key={s.id} className={`card p-4 active:scale-[.99] transition-transform ${chk?"ring-2 ring-blue-400":""}`}
+                      onClick={()=>(isAdmin||isManager)?setSelected(s.id):setSelected(s.id)}>
+                      <div className="flex items-start gap-3">
+                        {(isAdmin||isManager) && <button className="mt-0.5 shrink-0" onClick={e=>{e.stopPropagation();toggleLead(s.id);}}>{chk?<CheckSquare size={18} style={{color:T.blue}}/>:<Square size={18} className="text-slate-300"/>}</button>}
+                        <div className="w-10 h-10 rounded-xl flex items-center justify-center text-white font-extrabold text-sm shrink-0" style={{background:st.color}}>{(s.name||"?")[0]}</div>
+                        <div className="flex-1 min-w-0" onClick={()=>setSelected(s.id)}>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-bold text-sm">{s.name}</span>
+                            {s.qualification && <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full" style={{background:qualColor(s.qualification)+"22",color:qualColor(s.qualification)}}>{s.qualification}</span>}
+                          </div>
+                          <div className="text-xs text-slate-400 num mt-0.5">{s.phone}</div>
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-lg" style={{background:st.color+"18",color:st.color}}>{st.label}</span>
+                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-lg bg-slate-100 text-slate-500">{s.level} · {s.country}</span>
+                            {s.assigned_to && <span className="text-[10px] font-semibold px-2 py-0.5 rounded-lg bg-blue-50 text-blue-600">{memberName(s.assigned_to)}</span>}
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-1.5">
+                            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{background:callColor+"18",color:callColor}}>{shortLabel}</span>
+                            {s.follow_up && <span className={`text-[10px] font-semibold num ${isOverdue(s)?"text-red-600":"text-slate-400"}`}>{isOverdue(s)?"⚠️ ":""}{s.follow_up}</span>}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex gap-2 mt-3">
+                        <a href={`tel:${telNum(s.phone)}`} onClick={e=>e.stopPropagation()} className="flex-1 flex items-center justify-center gap-1.5 py-3 rounded-xl text-white font-bold text-sm" style={{background:T.blue}}><PhoneCall size={16}/> Call</a>
+                        <a href={waNum(s.phone)} target="_blank" rel="noreferrer" onClick={e=>e.stopPropagation()} className="flex-1 flex items-center justify-center gap-1.5 py-3 rounded-xl text-white font-bold text-sm" style={{background:"#25D366"}}><MessageCircle size={16}/> WhatsApp</a>
+                        {(isAdmin||isManager) && <button onClick={e=>{e.stopPropagation();if(window.confirm(`Delete ${s.name}?`))doDeleteStudent(s.id);}} className="p-3 rounded-xl text-slate-300 hover:text-red-500 hover:bg-red-50 transition"><Trash2 size={17}/></button>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* ── DESKTOP table ── */}
+              <div id="students-table" className="hidden sm:block card overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-[11px] uppercase tracking-wider text-slate-400 border-b" style={{borderColor:T.line}}>
@@ -1049,65 +1168,16 @@ export default function App() {
                             {!s.bde_id && !s.assigned_to && <span className="text-red-500 font-semibold text-[11px]">Unassigned</span>}
                           </td>
                           <td className="p-3 text-xs" onClick={()=>setSelected(s.id)}>
-                            {(() => {
-                              const notes = s.notes||[];
-                              const lastCall = [...notes].reverse().find(n=>n.text?.startsWith("📞"));
-                              const outcome = lastCall ? lastCall.text.split("\n")[0].replace("📞 CALL — ","") : null;
-                              const callColor = !outcome ? "#94A3B8"
-                                : outcome.includes("Not reachable") ? "#DC2626"
-                                : outcome.includes("Busy") ? "#F59E0B"
-                                : outcome.includes("callback") ? "#0d6efd"
-                                : outcome.includes("Interested") && !outcome.includes("Not") ? "#16A34A"
-                                : outcome.includes("Not interested") ? "#64748B"
-                                : outcome.includes("Counselling") ? "#14B8A6"
-                                : outcome.includes("WhatsApp") ? "#25D366"
-                                : "#94A3B8";
-                              const shortLabel = !outcome ? "Never called"
-                                : outcome.includes("Not reachable") ? "Not reachable"
-                                : outcome.includes("Busy") ? "Busy"
-                                : outcome.includes("callback") ? "Callback"
-                                : outcome.includes("Interested") && !outcome.includes("Not") ? "Interested"
-                                : outcome.includes("Not interested") ? "Not interested"
-                                : outcome.includes("Counselling") ? "Booked ✓"
-                                : outcome.includes("WhatsApp") ? "WhatsApp"
-                                : outcome?.slice(0,14)||"Called";
-
-                              // Find booked slot: 1) direct booked_by, 2) most recent booking note
-                              const findSlotForStudent = (student) => {
-                                const direct = slots.find(sl => sl.booked_by === student.id && sl.status === "booked");
-                                if (direct) return direct;
-                                const bookingNotes = (student.notes||[])
-                                  .filter(n => n.text?.startsWith("📅 Counselling booked"))
-                                  .sort((a,b) => new Date(b.created_at||0) - new Date(a.created_at||0));
-                                for (const bn of bookingNotes) {
-                                  const m = bn.text.match(/on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2})/);
-                                  if (m) {
-                                    const sl = slots.find(x => x.slot_date===m[1] && x.slot_time===m[2]);
-                                    if (sl) return sl;
-                                  }
-                                }
-                                return null;
-                              };
-                              const bookedSlot = findSlotForStudent(s);
-
-                              return (
-                                <div className="space-y-1">
-                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{background:callColor+"18",color:callColor}}>
-                                    {shortLabel}
-                                  </span>
-                                  {bookedSlot ? (
-                                    <div className="flex items-center gap-1">
-                                      <span className="text-[11px] font-extrabold px-2 py-1 rounded-lg num" style={{background:"#CCFBF1",color:"#0D9488"}}>
-                                        📅 {new Date(bookedSlot.slot_date).toLocaleDateString("en-GB",{day:"numeric",month:"short"})} · {bookedSlot.slot_time}
-                                      </span>
-                                    </div>
-                                  ) : s.follow_up ? (
-                                    <div className={`text-[11px] num ${isOverdue(s)?"font-bold text-red-600":"text-slate-400"}`}>
-                                      {isOverdue(s)?"⚠️ ":""}{s.follow_up}
-                                    </div>
-                                  ) : null}
-                                </div>
-                              );
+                            {(()=>{
+                              const notes=s.notes||[];
+                              const lastCall=[...notes].reverse().find(n=>n.text?.startsWith("📞"));
+                              const outcome=lastCall?lastCall.text.split("\n")[0].replace("📞 CALL — ",""):null;
+                              const callColor=!outcome?"#94A3B8":outcome.includes("Not reachable")?"#DC2626":outcome.includes("Busy")?"#F59E0B":outcome.includes("callback")?"#0d6efd":(outcome.includes("Interested")&&!outcome.includes("Not"))?"#16A34A":outcome.includes("Not interested")?"#64748B":outcome.includes("Counselling")?"#14B8A6":outcome.includes("WhatsApp")?"#25D366":"#94A3B8";
+                              const shortLabel=!outcome?"Never called":outcome.includes("Not reachable")?"Not reachable":outcome.includes("Busy")?"Busy":outcome.includes("callback")?"Callback":(outcome.includes("Interested")&&!outcome.includes("Not"))?"Interested":outcome.includes("Not interested")?"Not interested":outcome.includes("Counselling")?"Booked ✓":outcome.includes("WhatsApp")?"WhatsApp":outcome?.slice(0,14)||"Called";
+                              const direct=slots.find(sl=>sl.booked_by===s.id&&sl.status==="booked");
+                              let bookedSlot=direct;
+                              if(!bookedSlot){const bns=(s.notes||[]).filter(n=>n.text?.startsWith("📅 Counselling booked")).sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0));for(const bn of bns){const m=bn.text.match(/on (\d{4}-\d{2}-\d{2}) at (\d{2}:\d{2})/);if(m){const sl=slots.find(x=>x.slot_date===m[1]&&x.slot_time===m[2]);if(sl){bookedSlot=sl;break;}}}}
+                              return (<div className="space-y-1"><span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{background:callColor+"18",color:callColor}}>{shortLabel}</span>{bookedSlot?(<div><span className="text-[11px] font-extrabold px-2 py-1 rounded-lg num" style={{background:"#CCFBF1",color:"#0D9488"}}>📅 {new Date(bookedSlot.slot_date).toLocaleDateString("en-GB",{day:"numeric",month:"short"})} · {bookedSlot.slot_time}</span></div>):s.follow_up?(<div className={`text-[11px] num ${isOverdue(s)?"font-bold text-red-600":"text-slate-400"}`}>{isOverdue(s)?"⚠️ ":""}{s.follow_up}</div>):null}</div>);
                             })()}
                           </td>
                           <td className="p-3" onClick={e=>e.stopPropagation()}>
@@ -1185,11 +1255,12 @@ export default function App() {
       </div>
 
       {/* MOBILE NAV */}
-      <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 flex border-t" style={{background:T.ink,borderColor:"rgba(255,255,255,.08)"}}>
+      <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 flex border-t" style={{background:T.ink,borderColor:"rgba(255,255,255,.08)",paddingBottom:"env(safe-area-inset-bottom)"}}>
         {NAV.map(([id,Icon,label])=>(
-          <button key={id} onClick={()=>goTab(id)} className="flex-1 flex flex-col items-center gap-0.5 py-2.5">
-            <Icon size={18} style={{color:tab===id?"#fff":"#7C9CCB"}}/>
-            <span className="text-[9px] font-bold" style={{color:tab===id?"#fff":"#7C9CCB"}}>{label}</span>
+          <button key={id} onClick={()=>goTab(id)} className="flex-1 flex flex-col items-center gap-1 pt-2.5 pb-2 relative transition-opacity active:opacity-70">
+            {tab===id && <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 rounded-full" style={{background:"#60A5FA"}}/>}
+            <Icon size={21} style={{color:tab===id?"#fff":"#5B7FA6"}}/>
+            <span className="text-[10px] font-bold" style={{color:tab===id?"#fff":"#5B7FA6"}}>{label}</span>
           </button>
         ))}
       </nav>

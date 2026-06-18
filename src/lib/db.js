@@ -2,25 +2,35 @@ import { supabase } from './supabase'
 
 /* ── STUDENTS ── */
 export async function getStudents() {
-  // Supabase default limit is 1000 rows — fetch all pages
+  // Fetch students + notes only. Applications & documents are loaded on demand
+  // via loadStudentDetail() when a student is opened — avoids pulling ~22K rows upfront.
   const PAGE = 1000
   let allData = []
   let from = 0
   while (true) {
     const { data, error } = await supabase
       .from('students')
-      .select(`*, notes(id,text,created_at), applications(id,course,institution,commence_date,status), documents(id,name,status)`)
+      .select(`*, notes(id,text,created_at)`)
       .order('created_at', { ascending: false })
       .range(from, from + PAGE - 1)
     if (error) throw error
     if (!data || data.length === 0) break
     allData = allData.concat(data)
-    if (data.length < PAGE) break   // last page
+    if (data.length < PAGE) break
     from += PAGE
   }
-  // Deduplicate by id in case pagination boundary splits students with same created_at
   const seen = new Set()
   return allData.filter(s => seen.has(s.id) ? false : seen.add(s.id))
+}
+
+export async function loadStudentDetail(id) {
+  const { data, error } = await supabase
+    .from('students')
+    .select(`applications(id,course,institution,commence_date,status), documents(id,name,status)`)
+    .eq('id', id)
+    .single()
+  if (error) throw error
+  return data
 }
 export async function createStudent(s) {
   const allowed = ['name','phone','email','level','country','intake','field','stage','qualification','assigned_to','bde_id','follow_up','gender','dob','nationality','city','consent_tc','consent_mkt','hear_source','fin_source']
